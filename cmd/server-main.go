@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -54,19 +55,8 @@ var serverCmd = cli.Command{
   {{.HelpName}} - {{.Usage}}
 
 USAGE:
-  {{.HelpName}} {{if .VisibleFlags}}[FLAGS] {{end}}DIR1 [DIR2..]
-  {{.HelpName}} {{if .VisibleFlags}}[FLAGS] {{end}}DIR{1...64}
+minio server /dev/kvemul{1...n} [BUCKETNAME]
 
-DIR:
-  DIR points to a directory on a filesystem. When you want to combine
-  multiple drives into a single large system, pass one directory per
-  filesystem separated by space. You may also use a '...' convention
-  to abbreviate the directory arguments. Remote directories in a
-  distributed setup are encoded as HTTP(s) URIs.
-{{if .VisibleFlags}}
-FLAGS:
-  {{range .VisibleFlags}}{{.}}
-  {{end}}{{end}}
 ENVIRONMENT VARIABLES:
   ACCESS:
      MINIO_ACCESS_KEY: Custom username or access key of minimum 3 characters in length.
@@ -92,31 +82,10 @@ ENVIRONMENT VARIABLES:
      MINIO_PUBLIC_IPS: To enable bucket DNS requests, set this value to list of Minio host public IP(s) delimited by ",".
      MINIO_ETCD_ENDPOINTS: To enable bucket DNS requests, set this value to list of etcd endpoints delimited by ",".
 
-EXAMPLES:
-  1. Start minio server on "/home/shared" directory.
-     $ {{.HelpName}} /home/shared
-
-  2. Start minio server bound to a specific ADDRESS:PORT.
-     $ {{.HelpName}} --address 192.168.1.101:9000 /home/shared
-
-  3. Start minio server and enable virtual-host-style requests.
-     $ export MINIO_DOMAIN=mydomain.com
-     $ {{.HelpName}} --address mydomain.com:9000 /mnt/export
-
-  4. Start erasure coded minio server on a node with 64 drives.
-     $ {{.HelpName}} /mnt/export{1...64}
-
-  5. Start distributed minio server on an 8 node setup with 8 drives each. Run following command on all the 8 nodes.
+EXAMPLE:
      $ export MINIO_ACCESS_KEY=minio
      $ export MINIO_SECRET_KEY=miniostorage
-     $ {{.HelpName}} http://node{1...8}.example.com/mnt/export/{1...8}
-
-  6. Start minio server with edge caching enabled.
-     $ export MINIO_CACHE_DRIVES="/mnt/drive1;/mnt/drive2;/mnt/drive3;/mnt/drive4"
-     $ export MINIO_CACHE_EXCLUDE="bucket1/*;*.png"
-     $ export MINIO_CACHE_EXPIRY=40
-     $ export MINIO_CACHE_MAXUSE=80
-     $ {{.HelpName}} /home/shared
+     $ {{.HelpName}} /dev/kvemul{1...8} samsungbucket
 `,
 }
 
@@ -147,11 +116,16 @@ func serverHandleCmdArgs(ctx *cli.Context) {
 		logger.FatalIf(uErr, "Unable to validate passed endpoints")
 	}
 
+	if len(ctx.Args()) != 2 {
+		logger.FatalIf(errors.New("two arguments expected"), "/dev/kvemul{1...n} bucketname")
+	}
 	endpoints := strings.Fields(os.Getenv("MINIO_ENDPOINTS"))
 	if len(endpoints) > 0 {
 		globalMinioAddr, globalEndpoints, setupType, globalXLSetCount, globalXLSetDriveCount, err = createServerEndpoints(serverAddr, endpoints...)
 	} else {
-		globalMinioAddr, globalEndpoints, setupType, globalXLSetCount, globalXLSetDriveCount, err = createServerEndpoints(serverAddr, ctx.Args()...)
+		endpoint := ctx.Args()[0]
+		globalSamsungBucket = ctx.Args()[1]
+		globalMinioAddr, globalEndpoints, setupType, globalXLSetCount, globalXLSetDriveCount, err = createServerEndpoints(serverAddr, endpoint)
 	}
 	logger.FatalIf(err, "Invalid command line arguments")
 
@@ -287,7 +261,7 @@ func serverMain(ctx *cli.Context) {
 
 	signal.Notify(globalOSSignalCh, os.Interrupt, syscall.SIGTERM)
 
-	newObject, err := newObjectLayer(globalEndpoints)
+	newObject, err := newKVEmul(globalEndpoints)
 	if err != nil {
 		// Stop watching for any certificate changes.
 		globalTLSCerts.Stop()
@@ -337,7 +311,6 @@ func serverMain(ctx *cli.Context) {
 // Initialize object layer with the supplied disks, objectLayer is nil upon any error.
 func newObjectLayer(endpoints EndpointList) (newObject ObjectLayer, err error) {
 	// For FS only, directly use the disk.
-
 	isFS := len(endpoints) == 1
 	if isFS {
 		// Initialize new FS object layer.

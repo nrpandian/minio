@@ -216,6 +216,7 @@ var (
 	// Usage check interval value.
 	globalUsageCheckInterval = globalDefaultUsageCheckInterval
 
+	globalSamsungBucket string
 	// Add new variable global values here.
 )
 
