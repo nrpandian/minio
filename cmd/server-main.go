@@ -18,7 +18,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -116,9 +115,6 @@ func serverHandleCmdArgs(ctx *cli.Context) {
 		logger.FatalIf(uErr, "Unable to validate passed endpoints")
 	}
 
-	if len(ctx.Args()) != 2 {
-		logger.FatalIf(errors.New("two arguments expected"), "/dev/kvemul{1...n} bucketname")
-	}
 	endpoints := strings.Fields(os.Getenv("MINIO_ENDPOINTS"))
 	if len(endpoints) > 0 {
 		globalMinioAddr, globalEndpoints, setupType, globalXLSetCount, globalXLSetDriveCount, err = createServerEndpoints(serverAddr, endpoints...)
@@ -261,7 +257,7 @@ func serverMain(ctx *cli.Context) {
 
 	signal.Notify(globalOSSignalCh, os.Interrupt, syscall.SIGTERM)
 
-	newObject, err := newKVEmul(globalEndpoints)
+	newObject, err := newKVErasure(globalEndpoints)
 	if err != nil {
 		// Stop watching for any certificate changes.
 		globalTLSCerts.Stop()
