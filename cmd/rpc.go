@@ -34,6 +34,7 @@ const DefaultSkewTime = 15 * time.Minute
 var errRPCRetry = fmt.Errorf("rpc: retry error")
 
 func isNetError(err error) bool {
+	return false
 	if err == nil {
 		return false
 	}
@@ -215,7 +216,6 @@ func (client *RPCClient) Call(serviceMethod string, args interface {
 		if err == errRPCRetry {
 			return err
 		}
-
 		if isNetError(err) {
 			client.setRetryTicker(time.NewTicker(xrpc.DefaultRPCTimeout))
 		} else {

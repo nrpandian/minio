@@ -252,7 +252,7 @@ func CreateEndpoints(serverAddr string, args ...[]string) (string, EndpointList,
 		if err != nil {
 			return serverAddr, endpoints, setupType, err
 		}
-		fmt.Println(args)
+
 		if endpoint.Type() != PathEndpointType {
 			return serverAddr, endpoints, setupType, uiErrInvalidFSEndpoint(nil).Msg("use path style endpoint for FS setup")
 		}

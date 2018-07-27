@@ -119,9 +119,7 @@ func serverHandleCmdArgs(ctx *cli.Context) {
 	if len(endpoints) > 0 {
 		globalMinioAddr, globalEndpoints, setupType, globalXLSetCount, globalXLSetDriveCount, err = createServerEndpoints(serverAddr, endpoints...)
 	} else {
-		endpoint := ctx.Args()[0]
-		globalSamsungBucket = ctx.Args()[1]
-		globalMinioAddr, globalEndpoints, setupType, globalXLSetCount, globalXLSetDriveCount, err = createServerEndpoints(serverAddr, endpoint)
+		globalMinioAddr, globalEndpoints, setupType, globalXLSetCount, globalXLSetDriveCount, err = createServerEndpoints(serverAddr, ctx.Args()...)
 	}
 	logger.FatalIf(err, "Invalid command line arguments")
 
@@ -175,6 +173,7 @@ func serverMain(ctx *cli.Context) {
 		logger.EnableQuiet()
 	}
 
+	kvs_init_env()
 	// Handle all server command args.
 	serverHandleCmdArgs(ctx)
 
@@ -241,7 +240,7 @@ func serverMain(ctx *cli.Context) {
 	}
 
 	// Initialize Admin Peers inter-node communication only in distributed setup.
-	initGlobalAdminPeers(globalEndpoints)
+	// initGlobalAdminPeers(globalEndpoints)
 
 	var getCert certs.GetCertificateFunc
 	if globalTLSCerts != nil {
@@ -270,10 +269,10 @@ func serverMain(ctx *cli.Context) {
 	globalObjectAPI = newObject
 	globalObjLayerMutex.Unlock()
 
-	// Populate existing buckets to the etcd backend
-	if globalDNSConfig != nil {
-		initFederatorBackend(newObject)
-	}
+	// // Populate existing buckets to the etcd backend
+	// if globalDNSConfig != nil {
+	// 	initFederatorBackend(newObject)
+	// }
 
 	// Re-enable logging
 	logger.Disable = false
@@ -281,18 +280,18 @@ func serverMain(ctx *cli.Context) {
 	// Create new policy system.
 	globalPolicySys = NewPolicySys()
 
-	// Initialize policy system.
-	if err := globalPolicySys.Init(newObjectLayerFn()); err != nil {
-		logger.Fatal(err, "Unable to initialize policy system")
-	}
+	// // Initialize policy system.
+	// if err := globalPolicySys.Init(newObjectLayerFn()); err != nil {
+	// 	logger.Fatal(err, "Unable to initialize policy system")
+	// }
 
 	// Create new notification system.
 	globalNotificationSys = NewNotificationSys(globalServerConfig, globalEndpoints)
 
-	// Initialize notification system.
-	if err := globalNotificationSys.Init(newObjectLayerFn()); err != nil {
-		logger.Fatal(err, "Unable to initialize notification system")
-	}
+	// // Initialize notification system.
+	// if err := globalNotificationSys.Init(newObjectLayerFn()); err != nil {
+	// 	logger.Fatal(err, "Unable to initialize notification system")
+	// }
 
 	// Prints the formatted startup message once object layer is initialized.
 	apiEndpoints := getAPIEndpoints(globalMinioAddr)

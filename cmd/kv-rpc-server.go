@@ -12,46 +12,48 @@ import (
 const kvServiceName = "KV"
 const kvServiceSubPath = "/kv"
 
-var kvServicePath = path.Join(minioReservedBucketPath, storageServiceSubPath)
+var kvServicePath = path.Join(minioReservedBucketPath, kvServiceSubPath)
 
-type kvRPCReceiver struct {
+type KVRPCReceiver struct {
 	local KVAPI
 }
 
-type kvPutArgs struct {
+type KVPutArgs struct {
 	AuthArgs
 	Key   string
 	Value []byte
 }
 
-func (kv *kvRPCReceiver) Put(args *kvPutArgs, reply *VoidReply) error {
-	return nil
+func (kv *KVRPCReceiver) Put(args *KVPutArgs, reply *VoidReply) error {
+	return kv.local.Put(args.Key, args.Value)
 }
 
-type kvGetArgs struct {
+type KVGetArgs struct {
 	AuthArgs
 	Key string
 }
 
-type kvGetReply struct {
+type KVGetReply struct {
 	Value []byte
 }
 
-func (kv *kvRPCReceiver) Get(args *kvGetArgs, reply *kvGetReply) error {
-	return nil
+func (kv *KVRPCReceiver) Get(args *KVGetArgs, reply *KVGetReply) error {
+	value, err := kv.local.Get(args.Key)
+	reply.Value = value
+	return err
 }
 
-type kvDeleteArgs = kvGetArgs
+type KVDeleteArgs = KVGetArgs
 
-func (kv *kvRPCReceiver) Delete(args *kvDeleteArgs, reply *VoidReply) error {
-	return nil
+func (kv *KVRPCReceiver) Delete(args *KVDeleteArgs, reply *VoidReply) error {
+	return kv.local.Delete(args.Key)
 }
 
-type kvListReply struct {
+type KVListReply struct {
 	Keys []string
 }
 
-func (kv *kvRPCReceiver) List(args *AuthArgs, reply *kvListReply) error {
+func (kv *KVRPCReceiver) List(args *AuthArgs, reply *KVListReply) error {
 	return nil
 }
 
@@ -62,7 +64,7 @@ func newKVRPCServer(endpointPath string) (*xrpc.Server, error) {
 	}
 
 	rpcServer := xrpc.NewServer()
-	if err = rpcServer.RegisterName(kvServiceName, &kvRPCReceiver{kv}); err != nil {
+	if err = rpcServer.RegisterName(kvServiceName, &KVRPCReceiver{kv}); err != nil {
 		return nil, err
 	}
 

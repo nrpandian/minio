@@ -46,7 +46,6 @@ func gobEncode(e interface{}) ([]byte, error) {
 	if err := gob.NewEncoder(&buf).Encode(e); err != nil {
 		return nil, err
 	}
-
 	return buf.Bytes(), nil
 }
 
@@ -204,7 +203,6 @@ func (server *Server) call(serviceMethod string, argBytes []byte) (replyBytes []
 	case reflect.Slice:
 		replyv.Elem().Set(reflect.MakeSlice(method.Type.In(2).Elem(), 0, 0))
 	}
-
 	returnValues = method.Func.Call([]reflect.Value{server.receiverValue, argv, replyv})
 	errInter = returnValues[0].Interface()
 	if errInter != nil {
@@ -254,7 +252,6 @@ func (server *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-
 	w.Write(data)
 }
 

@@ -15,20 +15,22 @@ type kvRPCClient struct {
 }
 
 func (kv *kvRPCClient) Put(key string, value []byte) error {
-	args := kvPutArgs{Key: key, Value: value}
-	return kv.Call(kvServiceName+".Put", &args, nil)
+	args := KVPutArgs{Key: key, Value: value}
+	err := kv.Call(kvServiceName+".Put", &args, &VoidReply{})
+	return err
 }
 
 func (kv *kvRPCClient) Get(key string) ([]byte, error) {
-	args := kvGetArgs{Key: key}
-	reply := kvGetReply{}
+	args := KVGetArgs{Key: key}
+	reply := KVGetReply{}
 	err := kv.Call(kvServiceName+".Get", &args, &reply)
 	return reply.Value, err
 }
 
 func (kv *kvRPCClient) Delete(key string) error {
-	args := kvDeleteArgs{Key: key}
-	return kv.Call(kvServiceName+".Delete", &args, nil)
+	args := KVDeleteArgs{Key: key}
+	err := kv.Call(kvServiceName+".Delete", &args, &VoidReply{})
+	return err
 }
 
 func (kv *kvRPCClient) List() ([]string, error) {
