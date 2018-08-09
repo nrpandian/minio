@@ -36,8 +36,12 @@ type KVErasure struct {
 }
 
 func newKVErasure(endpoints EndpointList) (*KVErasure, error) {
+	bucketName := os.Getenv("MINIO_BUCKET")
+	if bucketName == "" {
+		bucketName = "default"
+	}
 	kv := KVErasure{
-		bucketName: os.Getenv("MINIO_BUCKET"),
+		bucketName: bucketName,
 		trie:       patricia.NewTrie(),
 	}
 	for _, endpoint := range endpoints {
@@ -71,10 +75,6 @@ func (k *KVErasure) GetBucketInfo(ctx context.Context, bucket string) (bucketInf
 }
 
 func (k *KVErasure) PutObject(ctx context.Context, bucket, object string, data *hash.Reader, metadata map[string]string) (objInfo ObjectInfo, err error) {
-	originalObject := object
-	if len(object) != 16 {
-		object = getSHA256Hash([]byte(object))[:16]
-	}
 	b, err := ioutil.ReadAll(data)
 	if err != nil {
 		return objInfo, ErrorRespToObjectError(err, bucket)
@@ -133,7 +133,7 @@ func (k *KVErasure) PutObject(ctx context.Context, bucket, object string, data *
 				return
 			}
 			w.Write(make([]byte, sizePerKVEmul-w.Len()))
-			errs[i] = k.disks[i].Put(object, w.Bytes())
+			errs[i] = k.disks[i].Put(bucket, object, w.Bytes())
 		}(i)
 	}
 	wg.Wait()
@@ -141,14 +141,11 @@ func (k *KVErasure) PutObject(ctx context.Context, bucket, object string, data *
 		logger.LogIf(ctx, err)
 		return objInfo, err
 	}
-	k.trie.Insert(patricia.Prefix(originalObject), 1)
+	k.trie.Insert(patricia.Prefix(object), 1)
 	return k.GetObjectInfo(ctx, bucket, object)
 }
 
 func (k *KVErasure) GetObjectInfo(ctx context.Context, bucket, object string) (objInfo ObjectInfo, err error) {
-	if len(object) != 16 {
-		object = getSHA256Hash([]byte(object))[:16]
-	}
 	parts := make([]KVObject, len(k.disks))
 	errs := make([]error, len(k.disks))
 
@@ -158,7 +155,7 @@ func (k *KVErasure) GetObjectInfo(ctx context.Context, bucket, object string) (o
 		go func(i int) {
 			defer wg.Done()
 			var b []byte
-			b, errs[i] = k.disks[i].Get(object)
+			b, errs[i] = k.disks[i].Get(bucket, object)
 			if errs[i] != nil {
 				return
 			}
@@ -182,17 +179,13 @@ func (k *KVErasure) GetObjectInfo(ctx context.Context, bucket, object string) (o
 }
 
 func (k *KVErasure) DeleteObject(ctx context.Context, bucket, object string) error {
-	originalObject := object
-	if len(object) != 16 {
-		object = getSHA256Hash([]byte(object))[:16]
-	}
 	errs := make([]error, len(k.disks))
 	var wg sync.WaitGroup
 	for i := range k.disks {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = k.disks[i].Delete(object)
+			errs[i] = k.disks[i].Delete(bucket, object)
 		}(i)
 	}
 	wg.Wait()
@@ -201,7 +194,7 @@ func (k *KVErasure) DeleteObject(ctx context.Context, bucket, object string) err
 		logger.LogIf(ctx, err)
 		return err
 	}
-	k.trie.Delete(patricia.Prefix(originalObject))
+	k.trie.Delete(patricia.Prefix(object))
 	return nil
 }
 
@@ -231,9 +224,6 @@ func kvQuorumPart(ctx context.Context, parts []KVObject, errs []error) (KVObject
 }
 
 func (k *KVErasure) GetObject(ctx context.Context, bucket, object string, startOffset int64, length int64, writer io.Writer, etag string) (err error) {
-	if len(object) != 16 {
-		object = getSHA256Hash([]byte(object))[:16]
-	}
 	if startOffset != 0 {
 		return NotImplemented{}
 	}
@@ -246,7 +236,7 @@ func (k *KVErasure) GetObject(ctx context.Context, bucket, object string, startO
 		go func(i int) {
 			defer wg.Done()
 			var b []byte
-			b, errs[i] = k.disks[i].Get(object)
+			b, errs[i] = k.disks[i].Get(bucket, object)
 			if errs[i] != nil {
 				return
 			}

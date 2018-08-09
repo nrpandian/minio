@@ -87,13 +87,13 @@ func kvs_close_device(kvd *C.struct_kv_device_api) {
 }
 
 func kvs_put(kvd *C.struct_kv_device_api, key string, value []byte) error {
-	keyCStrinc := C.CString(key)
+	keyCStrinc := C.CString(getSHA256Hash([]byte(key))[:16])
 	C.minio_kvs_put(kvd, unsafe.Pointer(keyCStrinc), C.int(len(key)), unsafe.Pointer(&value[0]), C.int(len(value)))
 	return nil
 }
 
 func kvs_get(kvd *C.struct_kv_device_api, key string) ([]byte, error) {
-	keyBytes := []byte(key)
+	keyBytes := []byte(getSHA256Hash([]byte(key))[:16])
 	valueLen := sizePerKVEmul
 	value := make([]byte, valueLen)
 	C.minio_kvs_get(kvd, unsafe.Pointer(&keyBytes[0]), C.int(len(keyBytes)), unsafe.Pointer(&value[0]), C.int(len(value)))
@@ -101,7 +101,7 @@ func kvs_get(kvd *C.struct_kv_device_api, key string) ([]byte, error) {
 }
 
 func kvs_delete(kvd *C.struct_kv_device_api, key string) error {
-	keyBytes := []byte(key)
+	keyBytes := []byte(getSHA256Hash([]byte(key))[:16])
 	C.minio_kvs_delete(kvd, unsafe.Pointer(&keyBytes[0]), C.int(len(keyBytes)))
 	return nil
 }
@@ -122,23 +122,27 @@ func newKVSSD(device string) (*kvssd, error) {
 	return &kvssd{device, kvd}, nil
 }
 
-func (k *kvssd) Put(key string, value []byte) error {
-	keyCStrinc := C.CString(key)
-	C.minio_kvs_put(k.kvd, unsafe.Pointer(keyCStrinc), C.int(len(key)), unsafe.Pointer(&value[0]), C.int(len(value)))
+func kvKeyName(container, key string) []byte {
+	return getSHA256Sum([]byte(pathJoin(container, key)))[:16]
+}
+
+func (k *kvssd) Put(container, key string, value []byte) error {
+	kvKey := kvKeyName(container, key)
+	C.minio_kvs_put(k.kvd, unsafe.Pointer(&kvKey[0]), C.int(len(kvKey)), unsafe.Pointer(&value[0]), C.int(len(value)))
 	return nil
 }
 
-func (k *kvssd) Get(key string) ([]byte, error) {
-	keyBytes := []byte(key)
+func (k *kvssd) Get(container, key string) ([]byte, error) {
+	kvKey := kvKeyName(container, key)
 	valueLen := sizePerKVEmul
 	value := make([]byte, valueLen)
-	C.minio_kvs_get(k.kvd, unsafe.Pointer(&keyBytes[0]), C.int(len(keyBytes)), unsafe.Pointer(&value[0]), C.int(len(value)))
+	C.minio_kvs_get(k.kvd, unsafe.Pointer(&kvKey[0]), C.int(len(kvKey)), unsafe.Pointer(&value[0]), C.int(len(value)))
 	return value, nil
 }
 
-func (k *kvssd) Delete(key string) error {
-	keyBytes := []byte(key)
-	C.minio_kvs_delete(k.kvd, unsafe.Pointer(&keyBytes[0]), C.int(len(keyBytes)))
+func (k *kvssd) Delete(container, key string) error {
+	kvKey := kvKeyName(container, key)
+	C.minio_kvs_delete(k.kvd, unsafe.Pointer(&kvKey[0]), C.int(len(kvKey)))
 	return nil
 }
 

@@ -20,17 +20,19 @@ type KVRPCReceiver struct {
 
 type KVPutArgs struct {
 	AuthArgs
-	Key   string
-	Value []byte
+	Container string
+	Key       string
+	Value     []byte
 }
 
 func (kv *KVRPCReceiver) Put(args *KVPutArgs, reply *VoidReply) error {
-	return kv.local.Put(args.Key, args.Value)
+	return kv.local.Put(args.Container, args.Key, args.Value)
 }
 
 type KVGetArgs struct {
 	AuthArgs
-	Key string
+	Container string
+	Key       string
 }
 
 type KVGetReply struct {
@@ -38,7 +40,7 @@ type KVGetReply struct {
 }
 
 func (kv *KVRPCReceiver) Get(args *KVGetArgs, reply *KVGetReply) error {
-	value, err := kv.local.Get(args.Key)
+	value, err := kv.local.Get(args.Container, args.Key)
 	reply.Value = value
 	return err
 }
@@ -46,7 +48,7 @@ func (kv *KVRPCReceiver) Get(args *KVGetArgs, reply *KVGetReply) error {
 type KVDeleteArgs = KVGetArgs
 
 func (kv *KVRPCReceiver) Delete(args *KVDeleteArgs, reply *VoidReply) error {
-	return kv.local.Delete(args.Key)
+	return kv.local.Delete(args.Container, args.Key)
 }
 
 type KVListReply struct {

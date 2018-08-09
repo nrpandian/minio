@@ -14,21 +14,21 @@ type kvRPCClient struct {
 	*RPCClient
 }
 
-func (kv *kvRPCClient) Put(key string, value []byte) error {
-	args := KVPutArgs{Key: key, Value: value}
+func (kv *kvRPCClient) Put(container, key string, value []byte) error {
+	args := KVPutArgs{Container: container, Key: key, Value: value}
 	err := kv.Call(kvServiceName+".Put", &args, &VoidReply{})
 	return err
 }
 
-func (kv *kvRPCClient) Get(key string) ([]byte, error) {
-	args := KVGetArgs{Key: key}
+func (kv *kvRPCClient) Get(container, key string) ([]byte, error) {
+	args := KVGetArgs{Container: container, Key: key}
 	reply := KVGetReply{}
 	err := kv.Call(kvServiceName+".Get", &args, &reply)
 	return reply.Value, err
 }
 
-func (kv *kvRPCClient) Delete(key string) error {
-	args := KVDeleteArgs{Key: key}
+func (kv *kvRPCClient) Delete(container, key string) error {
+	args := KVDeleteArgs{Container: container, Key: key}
 	err := kv.Call(kvServiceName+".Delete", &args, &VoidReply{})
 	return err
 }
