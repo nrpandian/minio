@@ -1,331 +1,195 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
-	"fmt"
 	"io"
-	"io/ioutil"
-	"os"
 	"sync"
-	"time"
-
-	"strings"
 
 	"github.com/klauspost/reedsolomon"
 	"github.com/minio/minio/cmd/logger"
-	"github.com/minio/minio/pkg/hash"
-	"github.com/tchap/go-patricia/patricia"
 )
 
-var sizePerKVEmul = 28 * 1024
-
-type KVObject struct {
-	Size         int
-	Data, Parity int
-	Modtime      time.Time
-	Contents     []byte
-}
-
 type KVErasure struct {
-	bucketName string
-	disks      []KVAPI
-	GatewayUnsupported
-	trie *patricia.Trie
+	encoder            reedsolomon.Encoder
+	DataNum, ParityNum int
+	BlockSize          int
 }
 
-func newKVErasure(endpoints EndpointList) (*KVErasure, error) {
-	bucketName := os.Getenv("MINIO_BUCKET")
-	if bucketName == "" {
-		bucketName = "default"
+func (k *KVErasure) EncodeData(ctx context.Context, data []byte) ([][]byte, error) {
+	if len(data) == 0 {
+		logger.LogIf(ctx, errUnexpected)
+		return nil, errUnexpected
 	}
-	kv := KVErasure{
-		bucketName: bucketName,
-		trie:       patricia.NewTrie(),
-	}
-	for _, endpoint := range endpoints {
-		var disk KVAPI
-		var err error
-		if endpoint.IsLocal {
-			disk, err = newKVSSD(endpoint.Path)
-		} else {
-			disk = newKVRPC(endpoint)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if disk == nil {
-			return nil, fmt.Errorf("open failed on device %s", disk)
-		}
-		kv.disks = append(kv.disks, disk)
-	}
-	return &kv, nil
-}
-
-func (k *KVErasure) ListBuckets(ctx context.Context) (buckets []BucketInfo, err error) {
-	return []BucketInfo{{k.bucketName, time.Now()}}, nil
-}
-
-func (k *KVErasure) GetBucketInfo(ctx context.Context, bucket string) (bucketInfo BucketInfo, err error) {
-	if bucket != k.bucketName {
-		return bucketInfo, BucketNotFound{Bucket: bucket}
-	}
-	return BucketInfo{k.bucketName, time.Now()}, nil
-}
-
-func (k *KVErasure) PutObject(ctx context.Context, bucket, object string, data *hash.Reader, metadata map[string]string) (objInfo ObjectInfo, err error) {
-	b, err := ioutil.ReadAll(data)
-	if err != nil {
-		return objInfo, ErrorRespToObjectError(err, bucket)
-	}
-
-	// No metadata is set, allocate a new one.
-	if metadata == nil {
-		metadata = make(map[string]string)
-	}
-
-	// Get parity and data drive count based on storage class metadata
-	dataDrives, parityDrives := getRedundancyCount(metadata[amzStorageClass], len(k.disks))
-
-	// we now know the number of blocks this object needs for data and parity.
-	// writeQuorum is dataBlocks + 1
-	writeQuorum := dataDrives + 1
-
-	erasure, err := reedsolomon.New(dataDrives, parityDrives)
+	encoded, err := k.encoder.Split(data)
 	if err != nil {
 		logger.LogIf(ctx, err)
-		return objInfo, err
+		return nil, err
 	}
-
-	encodedData, err := erasure.Split(b)
-	if err != nil {
+	if err = k.encoder.Encode(encoded); err != nil {
 		logger.LogIf(ctx, err)
-		return objInfo, err
+		return nil, err
 	}
-	if err = erasure.Encode(encodedData); err != nil {
-		logger.LogIf(ctx, err)
-		return objInfo, err
-	}
-
-	errs := make([]error, len(k.disks))
-	var wg sync.WaitGroup
-	modTime := time.Now()
-	for i := range k.disks {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			o := KVObject{}
-			o.Size = len(b)
-			o.Data = dataDrives
-			o.Parity = parityDrives
-			o.Modtime = modTime
-			o.Contents = encodedData[i]
-			var w bytes.Buffer
-			enc := gob.NewEncoder(&w)
-			err := enc.Encode(o)
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			if w.Len() > sizePerKVEmul {
-				errs[i] = ObjectTooLarge{}
-				return
-			}
-			w.Write(make([]byte, sizePerKVEmul-w.Len()))
-			errs[i] = k.disks[i].Put(bucket, object, w.Bytes())
-		}(i)
-	}
-	wg.Wait()
-	if err = reduceWriteQuorumErrs(context.Background(), errs, nil, writeQuorum); err != nil {
-		logger.LogIf(ctx, err)
-		return objInfo, err
-	}
-	k.trie.Insert(patricia.Prefix(object), 1)
-	return k.GetObjectInfo(ctx, bucket, object)
+	return encoded, nil
 }
 
-func (k *KVErasure) GetObjectInfo(ctx context.Context, bucket, object string) (objInfo ObjectInfo, err error) {
-	parts := make([]KVObject, len(k.disks))
-	errs := make([]error, len(k.disks))
-
-	var wg sync.WaitGroup
-	for i := range k.disks {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			var b []byte
-			b, errs[i] = k.disks[i].Get(bucket, object)
-			if errs[i] != nil {
-				return
-			}
-			errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&parts[i])
-			if errs[i] != nil && errs[i].Error() == "EOF" {
-				errs[i] = errFileNotFound
-			}
-		}(i)
-	}
-	wg.Wait()
-	part, err := kvQuorumPart(ctx, parts, errs)
-	if err != nil {
-		return objInfo, ObjectNotFound{}
-	}
-
-	objInfo.Bucket = bucket
-	objInfo.Name = object
-	objInfo.ModTime = part.Modtime
-	objInfo.Size = int64(part.Size)
-	return objInfo, nil
-}
-
-func (k *KVErasure) DeleteObject(ctx context.Context, bucket, object string) error {
-	errs := make([]error, len(k.disks))
-	var wg sync.WaitGroup
-	for i := range k.disks {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			errs[i] = k.disks[i].Delete(bucket, object)
-		}(i)
-	}
-	wg.Wait()
-	quorum := (len(k.disks) / 2) + 1
-	if err := reduceWriteQuorumErrs(context.Background(), errs, nil, quorum); err != nil {
-		logger.LogIf(ctx, err)
-		return err
-	}
-	k.trie.Delete(patricia.Prefix(object))
-	return nil
-}
-
-func kvQuorumPart(ctx context.Context, parts []KVObject, errs []error) (KVObject, error) {
-	if err := reduceReadQuorumErrs(ctx, errs, nil, len(parts)/2); err != nil {
-		return KVObject{}, err
-	}
-
-	modTimes := make([]time.Time, len(parts))
-	for i := range parts {
-		modTimes[i] = parts[i].Modtime
-	}
-	modTime, modTimeCount := commonTime(modTimes)
-	if modTimeCount < len(parts)/2 {
-		return KVObject{}, errXLReadQuorum
-	}
-	zero := time.Time{}
-	if modTime == zero {
-		return KVObject{}, ObjectNotFound{}
-	}
-	for i := range parts {
-		if modTime == parts[i].Modtime {
-			return parts[i], nil
+func (k *KVErasure) DecodeData(ctx context.Context, blocks [][]byte) error {
+	needsReconstruction := false
+	for _, b := range blocks[:k.DataNum] {
+		if b == nil {
+			needsReconstruction = true
+			break
 		}
 	}
-	return KVObject{}, errFileNotFound
-}
-
-func (k *KVErasure) GetObject(ctx context.Context, bucket, object string, startOffset int64, length int64, writer io.Writer, etag string) (err error) {
-	if startOffset != 0 {
-		return NotImplemented{}
-	}
-	parts := make([]KVObject, len(k.disks))
-	errs := make([]error, len(k.disks))
-
-	var wg sync.WaitGroup
-	for i := range k.disks {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			var b []byte
-			b, errs[i] = k.disks[i].Get(bucket, object)
-			if errs[i] != nil {
-				return
-			}
-			errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&parts[i])
-			if errs[i] != nil && errs[i].Error() == "EOF" {
-				errs[i] = errFileNotFound
-			}
-		}(i)
-	}
-	wg.Wait()
-	part, err := kvQuorumPart(ctx, parts, errs)
-	if err != nil {
-		return err
-	}
-	if err = reduceReadQuorumErrs(ctx, errs, nil, part.Data); err != nil {
-		return err
-	}
-
-	contents := make([][]byte, len(k.disks))
-	for i := range k.disks {
-		if parts[i].Modtime == part.Modtime {
-			contents[i] = parts[i].Contents
-		}
-	}
-
-	erasure, err := reedsolomon.New(part.Data, part.Parity)
-	if err != nil {
-		logger.LogIf(ctx, err)
-		return err
-	}
-
-	if err = erasure.ReconstructData(contents); err != nil {
-		return err
-	}
-
-	remaining := part.Size
-	for _, content := range contents[:part.Data] {
-		if remaining < len(content) {
-			content = content[:remaining]
-		}
-		writer.Write(content)
-		remaining -= len(content)
-	}
-
-	return nil
-}
-
-func (k *KVErasure) ListObjects(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (result ListObjectsInfo, err error) {
-	var objects []string
-	var commonPrefixes []string
-	k.trie.Visit(func(objectByte patricia.Prefix, item patricia.Item) error {
-		object := string(objectByte)
-		if !strings.HasPrefix(object, prefix) {
-			return nil
-		}
-		if strings.Compare(object, marker) <= 0 {
-			return nil
-		}
-		if delimiter == "" {
-			objects = append(objects, object)
-			return nil
-		}
-		suffix := strings.TrimPrefix(object, prefix)
-		i := strings.Index(suffix, slashSeparator)
-		if i == -1 {
-			objects = append(objects, object)
-			return nil
-		}
-		fullPrefix := prefix + suffix[:i+1]
-		for _, commonPrefix := range commonPrefixes {
-			if commonPrefix == fullPrefix {
-				return nil
-			}
-		}
-		commonPrefixes = append(commonPrefixes, fullPrefix)
+	if !needsReconstruction {
 		return nil
-	})
-	for _, object := range objects {
-		info, err := k.GetObjectInfo(ctx, bucket, object)
-		if err != nil {
+	}
+	if err := k.encoder.ReconstructData(blocks); err != nil {
+		return err
+	}
+	return nil
+}
+
+func newKVErasure(dataNum, parityNum int) *KVErasure {
+	encoder, err := reedsolomon.New(dataNum, parityNum)
+	if err != nil {
+		panic(err.Error())
+	}
+	blockSize := dataNum * kvValueSize
+	return &KVErasure{encoder, dataNum, parityNum, blockSize}
+}
+
+type kvParallelWriter struct {
+	disks       []KVAPI
+	writeQuorum int
+	bucket      string
+}
+
+func (p *kvParallelWriter) Put(ctx context.Context, key string, blocks [][]byte) error {
+	var wg sync.WaitGroup
+	errs := make([]error, len(p.disks))
+	for i := range p.disks {
+		if p.disks[i] == nil {
+			errs[i] = errDiskNotFound
 			continue
 		}
-		result.Objects = append(result.Objects, ObjectInfo{
-			Bucket:  bucket,
-			Name:    object,
-			Size:    info.Size,
-			ModTime: info.ModTime,
-		})
+
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = p.disks[i].Put(p.bucket, key, blocks[i])
+			if errs[i] != nil {
+				p.disks[i] = nil
+			}
+		}(i)
 	}
-	result.Prefixes = commonPrefixes
-	return result, nil
+	wg.Wait()
+
+	return reduceWriteQuorumErrs(ctx, errs, objectOpIgnoredErrs, p.writeQuorum)
+}
+
+func (k *KVErasure) Encode(ctx context.Context, disks []KVAPI, bucket string, reader io.Reader) ([]string, int64, error) {
+	p := &kvParallelWriter{disks, k.DataNum + 1, bucket}
+	buf := make([]byte, k.BlockSize)
+	var ids []string
+	var total int64
+	for {
+		var blocks [][]byte
+		n, err := io.ReadFull(reader, buf)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			logger.LogIf(ctx, err)
+			return nil, 0, err
+		}
+		eof := err == io.EOF || err == io.ErrUnexpectedEOF
+		if n == 0 {
+			break
+		}
+
+		blocks, err = k.EncodeData(ctx, buf)
+		if err != nil {
+			logger.LogIf(ctx, err)
+			return nil, 0, err
+		}
+		uuid := mustGetUUID()
+		err = p.Put(ctx, uuid, blocks)
+		if err != nil {
+			return nil, 0, err
+		}
+		ids = append(ids, uuid)
+		total += int64(n)
+		if eof {
+			break
+		}
+	}
+	return ids, total, nil
+}
+
+type kvParallelReader struct {
+	disks      []KVAPI
+	bucket     string
+	ids        []string
+	currentId  int
+	readQuorum int
+	blocks     [][]byte
+}
+
+func (k *kvParallelReader) Read(ctx context.Context) ([][]byte, error) {
+	blocks := make([][]byte, len(k.disks))
+	errs := make([]error, len(k.disks))
+	if len(k.ids) == 0 {
+		return blocks, nil
+	}
+	var wg sync.WaitGroup
+	for i := range k.disks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = k.disks[i].Get(k.bucket, k.ids[k.currentId], k.blocks[i])
+			if errs[i] != nil && errs[i].Error() == "EOF" {
+				errs[i] = errFileNotFound
+			}
+			if errs[i] == nil {
+				blocks[i] = k.blocks[i]
+			}
+		}(i)
+	}
+	wg.Wait()
+	err := reduceWriteQuorumErrs(ctx, errs, objectOpIgnoredErrs, k.readQuorum)
+	k.currentId++
+	return blocks, err
+}
+
+func (k *KVErasure) Decode(ctx context.Context, disks []KVAPI, bucket string, ids []string, length int64, readQuorum int, writer io.Writer) error {
+	blocks := make([][]byte, len(disks))
+	for i := range blocks {
+		blocks[i] = make([]byte, kvValueSize)
+	}
+	reader := &kvParallelReader{disks, bucket, ids, 0, readQuorum, blocks}
+	remaining := length
+	for reader.currentId < len(reader.ids) {
+		blocks, err := reader.Read(ctx)
+		if err != nil {
+			logger.LogIf(ctx, err)
+			return err
+		}
+		if err = k.DecodeData(ctx, blocks); err != nil {
+			logger.LogIf(ctx, err)
+			return err
+		}
+		for _, block := range blocks[:readQuorum] {
+			if remaining < int64(len(block)) {
+				block = block[:remaining]
+			}
+			n, err := writer.Write(block)
+			if err != nil {
+				logger.LogIf(ctx, err)
+				return err
+			}
+			remaining -= int64(n)
+		}
+	}
+	if remaining != 0 {
+		logger.LogIf(ctx, errUnexpected)
+		return errUnexpected
+	}
+	return nil
 }

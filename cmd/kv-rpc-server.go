@@ -33,6 +33,7 @@ type KVGetArgs struct {
 	AuthArgs
 	Container string
 	Key       string
+	Length    int64
 }
 
 type KVGetReply struct {
@@ -40,12 +41,17 @@ type KVGetReply struct {
 }
 
 func (kv *KVRPCReceiver) Get(args *KVGetArgs, reply *KVGetReply) error {
-	value, err := kv.local.Get(args.Container, args.Key)
-	reply.Value = value
+	buf := make([]byte, args.Length)
+	err := kv.local.Get(args.Container, args.Key, buf)
+	reply.Value = buf
 	return err
 }
 
-type KVDeleteArgs = KVGetArgs
+type KVDeleteArgs struct {
+	AuthArgs
+	Container string
+	Key       string
+}
 
 func (kv *KVRPCReceiver) Delete(args *KVDeleteArgs, reply *VoidReply) error {
 	return kv.local.Delete(args.Container, args.Key)

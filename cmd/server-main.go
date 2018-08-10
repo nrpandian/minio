@@ -256,7 +256,7 @@ func serverMain(ctx *cli.Context) {
 
 	signal.Notify(globalOSSignalCh, os.Interrupt, syscall.SIGTERM)
 
-	newObject, err := newKVErasure(globalEndpoints)
+	newObject, err := newKVErasureLayer(globalEndpoints)
 	if err != nil {
 		// Stop watching for any certificate changes.
 		globalTLSCerts.Stop()

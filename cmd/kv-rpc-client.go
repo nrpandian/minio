@@ -20,11 +20,11 @@ func (kv *kvRPCClient) Put(container, key string, value []byte) error {
 	return err
 }
 
-func (kv *kvRPCClient) Get(container, key string) ([]byte, error) {
-	args := KVGetArgs{Container: container, Key: key}
-	reply := KVGetReply{}
+func (kv *kvRPCClient) Get(container, key string, value []byte) error {
+	args := KVGetArgs{Container: container, Key: key, Length: int64(len(value))}
+	reply := KVGetReply{value}
 	err := kv.Call(kvServiceName+".Get", &args, &reply)
-	return reply.Value, err
+	return err
 }
 
 func (kv *kvRPCClient) Delete(container, key string) error {
