@@ -12,6 +12,8 @@ import (
 
 	"strings"
 
+	"sort"
+
 	"github.com/minio/minio/cmd/logger"
 	"github.com/minio/minio/pkg/hash"
 	"github.com/tchap/go-patricia/patricia"
@@ -20,10 +22,17 @@ import (
 const kvValueSize = 28 * 1024
 
 type KVPart struct {
-	IDs  []string
-	ETag string
-	Size int64
+	IDs        []string
+	ETag       string
+	Size       int64
+	PartNumber int
 }
+
+type byKVPartNumber []KVPart
+
+func (t byKVPartNumber) Len() int           { return len(t) }
+func (t byKVPartNumber) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
+func (t byKVPartNumber) Less(i, j int) bool { return t[i].PartNumber < t[j].PartNumber }
 
 type KVNSEntry struct {
 	Version                  string
@@ -34,6 +43,17 @@ type KVNSEntry struct {
 	ModTime                  time.Time
 	Parts                    []KVPart
 	ETag                     string
+}
+
+func (k *KVNSEntry) AddPart(kvPart KVPart) {
+	for i := range k.Parts {
+		if k.Parts[i].PartNumber == kvPart.PartNumber {
+			k.Parts[i] = kvPart
+			return
+		}
+	}
+	k.Parts = append(k.Parts, kvPart)
+	sort.Sort(byKVPartNumber(k.Parts))
 }
 
 type KVErasureLayer struct {
@@ -91,7 +111,7 @@ func (k *KVErasureLayer) PutObject(ctx context.Context, bucket, object string, d
 	if err != nil {
 		return objInfo, err
 	}
-	part := KVPart{ids, "", n}
+	part := KVPart{ids, "", n, 1}
 	nsEntry := KVNSEntry{
 		"1",
 		bucket,
@@ -295,4 +315,202 @@ func (k *KVErasureLayer) ListObjects(ctx context.Context, bucket, prefix, marker
 	}
 	result.Prefixes = commonPrefixes
 	return result, nil
+}
+
+const kvMultipartPrefix = ".minio.sys/multipart"
+
+func (k *KVErasureLayer) NewMultipartUpload(ctx context.Context, bucket, object string, metadata map[string]string) (uploadID string, err error) {
+	dataDrives, parityDrives := getRedundancyCount(metadata[amzStorageClass], len(k.disks))
+	disks := make([]KVAPI, len(k.disks))
+	copy(disks, k.disks)
+	nsEntry := KVNSEntry{
+		"1",
+		bucket,
+		object,
+		dataDrives, parityDrives,
+		0,
+		time.Now(),
+		nil,
+		"",
+	}
+	uploadID = mustGetUUID()
+	var buf bytes.Buffer
+	err = gob.NewEncoder(&buf).Encode(nsEntry)
+	if err != nil {
+		return "", err
+	}
+	buf.Write(make([]byte, kvValueSize-buf.Len()))
+	errs := make([]error, len(k.disks))
+	var wg sync.WaitGroup
+	mpEntryName := pathJoin(kvMultipartPrefix, uploadID, object)
+	for i := range k.disks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = k.disks[i].Put(bucket, mpEntryName, buf.Bytes())
+		}(i)
+	}
+	wg.Wait()
+	if err = reduceWriteQuorumErrs(ctx, errs, nil, (len(k.disks)/2)+1); err != nil {
+		return "", err
+	}
+	return uploadID, nil
+}
+
+func (k *KVErasureLayer) PutObjectPart(ctx context.Context, bucket, object, uploadID string, partID int, data *hash.Reader) (info PartInfo, err error) {
+	mpEntryName := pathJoin(kvMultipartPrefix, uploadID, object)
+	entries := make([]KVNSEntry, len(k.disks))
+	errs := make([]error, len(k.disks))
+	disks := make([]KVAPI, len(k.disks))
+	copy(disks, k.disks)
+
+	var wg sync.WaitGroup
+	for i := range disks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			b := make([]byte, kvValueSize)
+			errs[i] = disks[i].Get(bucket, mpEntryName, b)
+			if errs[i] != nil {
+				disks[i] = nil
+				return
+			}
+			errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			if errs[i] != nil && errs[i].Error() == "EOF" {
+				errs[i] = errFileNotFound
+			}
+		}(i)
+	}
+	wg.Wait()
+	entry, err := kvQuorumPart(ctx, entries, errs)
+	if err != nil {
+		logger.LogIf(ctx, err)
+		return info, toObjectErr(err, bucket, object)
+	}
+
+	erasure := newKVErasure(entry.DataNumber, entry.ParityNumber)
+	ids, n, err := erasure.Encode(ctx, disks, bucket, data)
+	if err != nil {
+		logger.LogIf(ctx, err)
+		return info, err
+	}
+	kvPart := KVPart{}
+	kvPart.ETag = GenETag()
+	kvPart.IDs = ids
+	kvPart.Size = n
+	kvPart.PartNumber = partID
+	entry.AddPart(kvPart)
+
+	for i := range entries {
+		entries[i] = entry
+	}
+
+	var buf bytes.Buffer
+	err = gob.NewEncoder(&buf).Encode(entry)
+	if err != nil {
+		return info, err
+	}
+	buf.Write(make([]byte, kvValueSize-buf.Len()))
+
+	for i := range k.disks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = k.disks[i].Put(bucket, mpEntryName, buf.Bytes())
+		}(i)
+	}
+	wg.Wait()
+	if err = reduceWriteQuorumErrs(ctx, errs, nil, (len(k.disks)/2)+1); err != nil {
+		return info, err
+	}
+
+	info.ETag = kvPart.ETag
+	info.PartNumber = partID
+	info.LastModified = time.Now()
+	info.Size = n
+	return info, nil
+}
+
+func (k *KVErasureLayer) ListMultipartUploads(ctx context.Context, bucket, prefix, keyMarker, uploadIDMarker, delimiter string, maxUploads int) (result ListMultipartsInfo, err error) {
+	return result, nil
+}
+
+func (k *KVErasureLayer) ListObjectParts(ctx context.Context, bucket, object, uploadID string, partNumberMarker int, maxParts int) (result ListPartsInfo, err error) {
+	return result, nil
+}
+
+func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, object, uploadID string, uploadedParts []CompletePart) (objInfo ObjectInfo, err error) {
+	mpEntryName := pathJoin(kvMultipartPrefix, uploadID, object)
+	entries := make([]KVNSEntry, len(k.disks))
+	errs := make([]error, len(k.disks))
+	disks := make([]KVAPI, len(k.disks))
+	copy(disks, k.disks)
+
+	var wg sync.WaitGroup
+	for i := range disks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			b := make([]byte, kvValueSize)
+			errs[i] = disks[i].Get(bucket, mpEntryName, b)
+			if errs[i] != nil {
+				disks[i] = nil
+				return
+			}
+			errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			if errs[i] != nil && errs[i].Error() == "EOF" {
+				errs[i] = errFileNotFound
+			}
+		}(i)
+	}
+	wg.Wait()
+	entry, err := kvQuorumPart(ctx, entries, errs)
+	if err != nil {
+		logger.LogIf(ctx, err)
+		return objInfo, toObjectErr(err, bucket, object)
+	}
+	if len(uploadedParts) != len(entry.Parts) {
+		logger.LogIf(ctx, errUnexpected)
+		return objInfo, errUnexpected
+	}
+	for i := range uploadedParts {
+		if uploadedParts[i].PartNumber != entry.Parts[i].PartNumber {
+			logger.LogIf(ctx, errUnexpected)
+			return objInfo, errUnexpected
+		}
+		if uploadedParts[i].ETag != entry.Parts[i].ETag {
+			logger.LogIf(ctx, errUnexpected)
+			return objInfo, errUnexpected
+		}
+	}
+	entry.ETag = GenETag()
+	for i := range entries {
+		entries[i] = entry
+	}
+
+	var buf bytes.Buffer
+	err = gob.NewEncoder(&buf).Encode(entry)
+	if err != nil {
+		return objInfo, err
+	}
+	buf.Write(make([]byte, kvValueSize-buf.Len()))
+
+	for i := range k.disks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = k.disks[i].Put(bucket, object, buf.Bytes())
+		}(i)
+	}
+	wg.Wait()
+	if err = reduceWriteQuorumErrs(ctx, errs, nil, (len(k.disks)/2)+1); err != nil {
+		return objInfo, err
+	}
+	objInfo.Name = object
+	objInfo.Bucket = bucket
+	objInfo.ModTime = entry.ModTime
+	objInfo.Size = entry.Size
+	objInfo.ETag = entry.ETag
+	k.trie.Insert(patricia.Prefix(object), 1)
+	return objInfo, nil
 }
