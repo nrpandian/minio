@@ -15,12 +15,25 @@ import (
 
 	"encoding/json"
 
+	"strconv"
+
 	"github.com/minio/minio/cmd/logger"
 	"github.com/minio/minio/pkg/hash"
 	"github.com/tchap/go-patricia/patricia"
 )
 
-const kvValueSize = 500 * 1024
+var kvValueSize = func() int {
+	size := os.Getenv("MINIO_KVSSD_VALUE_SIZE")
+	if size == "" {
+		return 28 * 1024
+	}
+	i, err := strconv.Atoi(size)
+	if err != nil {
+		logger.LogIf(context.Background(), err)
+		return 28 * 1024
+	}
+	return i
+}()
 
 type KVPart struct {
 	IDs        []string
@@ -173,7 +186,7 @@ func (k *KVErasureLayer) GetObjectInfo(ctx context.Context, bucket, object strin
 			}
 			errs[i] = json.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
 			// errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
-			if errs[i] != nil && errs[i].Error() == "EOF" {
+			if errs[i] != nil {
 				errs[i] = errFileNotFound
 			}
 		}(i)
@@ -208,7 +221,7 @@ func (k *KVErasureLayer) DeleteObject(ctx context.Context, bucket, object string
 			}
 			errs[i] = json.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
 			// errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
-			if errs[i] != nil && errs[i].Error() == "EOF" {
+			if errs[i] != nil {
 				errs[i] = errFileNotFound
 			}
 		}(i)
@@ -294,7 +307,7 @@ func (k *KVErasureLayer) GetObject(ctx context.Context, bucket, object string, s
 			}
 			errs[i] = json.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
 			// errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
-			if errs[i] != nil && errs[i].Error() == "EOF" {
+			if errs[i] != nil {
 				errs[i] = errFileNotFound
 			}
 		}(i)
@@ -429,7 +442,7 @@ func (k *KVErasureLayer) PutObjectPart(ctx context.Context, bucket, object, uplo
 			}
 			errs[i] = json.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
 			// errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
-			if errs[i] != nil && errs[i].Error() == "EOF" {
+			if errs[i] != nil {
 				errs[i] = errFileNotFound
 			}
 		}(i)
@@ -513,7 +526,7 @@ func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, ob
 			}
 			errs[i] = json.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
 			// errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
-			if errs[i] != nil && errs[i].Error() == "EOF" {
+			if errs[i] != nil {
 				errs[i] = errFileNotFound
 			}
 		}(i)

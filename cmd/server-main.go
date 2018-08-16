@@ -84,7 +84,7 @@ ENVIRONMENT VARIABLES:
 EXAMPLE:
      $ export MINIO_ACCESS_KEY=minio
      $ export MINIO_SECRET_KEY=miniostorage
-     $ {{.HelpName}} /dev/kvemul{1...8} samsungbucket
+     $ {{.HelpName}} /dev/nvmen{1...4}n1 samsungbucket
 `,
 }
 
@@ -256,7 +256,12 @@ func serverMain(ctx *cli.Context) {
 
 	signal.Notify(globalOSSignalCh, os.Interrupt, syscall.SIGTERM)
 
-	newObject, err := newKVErasureLayer(globalEndpoints)
+	var newObject ObjectLayer
+	if len(globalEndpoints) == 1 {
+		newObject, err = newKV(globalEndpoints[0].Path)
+	} else {
+		newObject, err = newKVErasureLayer(globalEndpoints)
+	}
 	if err != nil {
 		// Stop watching for any certificate changes.
 		globalTLSCerts.Stop()
