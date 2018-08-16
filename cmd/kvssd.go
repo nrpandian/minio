@@ -91,7 +91,10 @@ type kvssd struct {
 	kvd    *C.struct_kv_device_api
 }
 
-func newKVSSD(device string) (*kvssd, error) {
+func newKVSSD(device string) (KVAPI, error) {
+	if strings.HasPrefix(device, "/dev/xfs") {
+		return newKVXFS(device)
+	}
 	if strings.HasPrefix(device, "/dev/kvemul") {
 		device = "/dev/kvemul"
 	}

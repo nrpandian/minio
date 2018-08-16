@@ -3,7 +3,6 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"encoding/gob"
 	"fmt"
 	"io"
 	"os"
@@ -14,12 +13,14 @@ import (
 
 	"sort"
 
+	"encoding/json"
+
 	"github.com/minio/minio/cmd/logger"
 	"github.com/minio/minio/pkg/hash"
 	"github.com/tchap/go-patricia/patricia"
 )
 
-const kvValueSize = 28 * 1024
+const kvValueSize = 500 * 1024
 
 type KVPart struct {
 	IDs        []string
@@ -54,6 +55,7 @@ func (k *KVNSEntry) AddPart(kvPart KVPart) {
 	}
 	k.Parts = append(k.Parts, kvPart)
 	sort.Sort(byKVPartNumber(k.Parts))
+	k.Size += kvPart.Size
 }
 
 type KVErasureLayer struct {
@@ -123,7 +125,8 @@ func (k *KVErasureLayer) PutObject(ctx context.Context, bucket, object string, d
 		mustGetUUID(),
 	}
 	var buf bytes.Buffer
-	err = gob.NewEncoder(&buf).Encode(nsEntry)
+	err = json.NewEncoder(&buf).Encode(nsEntry)
+	// err = gob.NewEncoder(&buf).Encode(nsEntry)
 	if err != nil {
 		return objInfo, err
 	}
@@ -168,7 +171,8 @@ func (k *KVErasureLayer) GetObjectInfo(ctx context.Context, bucket, object strin
 			if errs[i] != nil {
 				return
 			}
-			errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			errs[i] = json.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			// errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
 			if errs[i] != nil && errs[i].Error() == "EOF" {
 				errs[i] = errFileNotFound
 			}
@@ -177,7 +181,6 @@ func (k *KVErasureLayer) GetObjectInfo(ctx context.Context, bucket, object strin
 	wg.Wait()
 	entry, err := kvQuorumPart(ctx, entries, errs)
 	if err != nil {
-		logger.LogIf(ctx, err)
 		return objInfo, toObjectErr(err, bucket, object)
 	}
 
@@ -190,8 +193,47 @@ func (k *KVErasureLayer) GetObjectInfo(ctx context.Context, bucket, object strin
 }
 
 func (k *KVErasureLayer) DeleteObject(ctx context.Context, bucket, object string) error {
+	entries := make([]KVNSEntry, len(k.disks))
 	errs := make([]error, len(k.disks))
+
 	var wg sync.WaitGroup
+	for i := range k.disks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			b := make([]byte, kvValueSize)
+			errs[i] = k.disks[i].Get(bucket, object, b)
+			if errs[i] != nil {
+				return
+			}
+			errs[i] = json.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			// errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			if errs[i] != nil && errs[i].Error() == "EOF" {
+				errs[i] = errFileNotFound
+			}
+		}(i)
+	}
+	wg.Wait()
+	entry, err := kvQuorumPart(ctx, entries, errs)
+	if err != nil {
+		return toObjectErr(err, bucket, object)
+	}
+
+	var blockIDs []string
+	for _, part := range entry.Parts {
+		blockIDs = append(blockIDs, part.IDs...)
+	}
+
+	for _, blockID := range blockIDs {
+		for i := range k.disks {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				k.disks[i].Delete(bucket, blockID)
+			}(i)
+		}
+		wg.Wait()
+	}
 	for i := range k.disks {
 		wg.Add(1)
 		go func(i int) {
@@ -202,8 +244,7 @@ func (k *KVErasureLayer) DeleteObject(ctx context.Context, bucket, object string
 	wg.Wait()
 	quorum := (len(k.disks) / 2) + 1
 	if err := reduceWriteQuorumErrs(context.Background(), errs, nil, quorum); err != nil {
-		logger.LogIf(ctx, err)
-		return err
+		return ObjectNotFound{}
 	}
 	k.trie.Delete(patricia.Prefix(object))
 	return nil
@@ -251,7 +292,8 @@ func (k *KVErasureLayer) GetObject(ctx context.Context, bucket, object string, s
 			if errs[i] != nil {
 				return
 			}
-			errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			errs[i] = json.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			// errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
 			if errs[i] != nil && errs[i].Error() == "EOF" {
 				errs[i] = errFileNotFound
 			}
@@ -265,10 +307,19 @@ func (k *KVErasureLayer) GetObject(ctx context.Context, bucket, object string, s
 	if entry.Size != length {
 		return NotImplemented{}
 	}
+	if entry.Size == 0 {
+		return nil
+	}
 	disks := make([]KVAPI, len(k.disks))
 	copy(disks, k.disks)
 	erasure := newKVErasure(entry.DataNumber, entry.ParityNumber)
-	return erasure.Decode(ctx, disks, bucket, entry.Parts[0].IDs, entry.Size, entry.DataNumber, writer)
+	for _, part := range entry.Parts {
+		err = erasure.Decode(ctx, disks, bucket, part.IDs, part.Size, entry.DataNumber, writer)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (k *KVErasureLayer) ListObjects(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (result ListObjectsInfo, err error) {
@@ -335,7 +386,8 @@ func (k *KVErasureLayer) NewMultipartUpload(ctx context.Context, bucket, object 
 	}
 	uploadID = mustGetUUID()
 	var buf bytes.Buffer
-	err = gob.NewEncoder(&buf).Encode(nsEntry)
+	err = json.NewEncoder(&buf).Encode(nsEntry)
+	// err = gob.NewEncoder(&buf).Encode(nsEntry)
 	if err != nil {
 		return "", err
 	}
@@ -375,7 +427,8 @@ func (k *KVErasureLayer) PutObjectPart(ctx context.Context, bucket, object, uplo
 				disks[i] = nil
 				return
 			}
-			errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			errs[i] = json.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			// errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
 			if errs[i] != nil && errs[i].Error() == "EOF" {
 				errs[i] = errFileNotFound
 			}
@@ -406,7 +459,8 @@ func (k *KVErasureLayer) PutObjectPart(ctx context.Context, bucket, object, uplo
 	}
 
 	var buf bytes.Buffer
-	err = gob.NewEncoder(&buf).Encode(entry)
+	err = json.NewEncoder(&buf).Encode(entry)
+	// err = gob.NewEncoder(&buf).Encode(entry)
 	if err != nil {
 		return info, err
 	}
@@ -457,7 +511,8 @@ func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, ob
 				disks[i] = nil
 				return
 			}
-			errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			errs[i] = json.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
+			// errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
 			if errs[i] != nil && errs[i].Error() == "EOF" {
 				errs[i] = errFileNotFound
 			}
@@ -489,7 +544,8 @@ func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, ob
 	}
 
 	var buf bytes.Buffer
-	err = gob.NewEncoder(&buf).Encode(entry)
+	err = json.NewEncoder(&buf).Encode(entry)
+	// err = gob.NewEncoder(&buf).Encode(entry)
 	if err != nil {
 		return objInfo, err
 	}
