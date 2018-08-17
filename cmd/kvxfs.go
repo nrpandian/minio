@@ -10,7 +10,7 @@ type kvxfs struct {
 }
 
 func newKVXFS(device string) (*kvxfs, error) {
-	dir := pathJoin(os.Getenv("HOME"), device)
+	dir := pathJoin(os.Getenv("HOME"), "tmp", device)
 	err := os.MkdirAll(dir, 0755)
 	if err != nil {
 		return nil, err

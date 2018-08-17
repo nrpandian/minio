@@ -71,11 +71,59 @@ func (k *KVNSEntry) AddPart(kvPart KVPart) {
 	k.Size += kvPart.Size
 }
 
+type KVListMap struct {
+	listMap map[string]*patricia.Trie
+	sync.Mutex
+}
+
+func (k *KVListMap) insertObject(bucket, object string) {
+	k.Lock()
+	defer k.Unlock()
+	trie := k.listMap[bucket]
+	if trie == nil {
+		return
+	}
+	trie.Insert(patricia.Prefix(object), 1)
+}
+
+func (k *KVListMap) deleteObject(bucket, object string) {
+	k.Lock()
+	defer k.Unlock()
+	trie := k.listMap[bucket]
+	if trie == nil {
+		return
+	}
+	trie.Delete(patricia.Prefix(object))
+}
+
 type KVErasureLayer struct {
 	bucketName string
 	disks      []KVAPI
 	GatewayUnsupported
-	trie *patricia.Trie
+	listMap   map[string]*patricia.Trie
+	listMapMu sync.Mutex
+}
+
+func (k *KVErasureLayer) listMapInsert(bucket, object string) {
+	k.listMapMu.Lock()
+	defer k.listMapMu.Unlock()
+
+	trie := k.listMap[bucket]
+	if trie == nil {
+		return
+	}
+	trie.Insert(patricia.Prefix(object), 1)
+}
+
+func (k *KVErasureLayer) listMapDelete(bucket, object string) {
+	k.listMapMu.Lock()
+	defer k.listMapMu.Unlock()
+
+	trie := k.listMap[bucket]
+	if trie == nil {
+		return
+	}
+	trie.Delete(patricia.Prefix(object))
 }
 
 func newKVErasureLayer(endpoints EndpointList) (*KVErasureLayer, error) {
@@ -85,7 +133,7 @@ func newKVErasureLayer(endpoints EndpointList) (*KVErasureLayer, error) {
 	}
 	kv := KVErasureLayer{
 		bucketName: bucketName,
-		trie:       patricia.NewTrie(),
+		listMap:    make(map[string]*patricia.Trie),
 	}
 	for _, endpoint := range endpoints {
 		var disk KVAPI
@@ -107,17 +155,50 @@ func newKVErasureLayer(endpoints EndpointList) (*KVErasureLayer, error) {
 }
 
 func (k *KVErasureLayer) ListBuckets(ctx context.Context) (buckets []BucketInfo, err error) {
-	return []BucketInfo{{k.bucketName, time.Now()}}, nil
+	k.listMapMu.Lock()
+	defer k.listMapMu.Unlock()
+	for key, _ := range k.listMap {
+		buckets = append(buckets, BucketInfo{key, time.Now()})
+	}
+	return buckets, nil
+}
+
+func (k *KVErasureLayer) MakeBucketWithLocation(ctx context.Context, bucket, location string) error {
+	k.listMapMu.Lock()
+	defer k.listMapMu.Unlock()
+
+	trie := k.listMap[bucket]
+	if trie != nil {
+		return BucketAlreadyExists{}
+	}
+	k.listMap[bucket] = patricia.NewTrie()
+	return nil
+}
+
+func (k *KVErasureLayer) DeleteBucket(ctx context.Context, bucket string) error {
+	k.listMapMu.Lock()
+	defer k.listMapMu.Unlock()
+
+	delete(k.listMap, bucket)
+	return nil
 }
 
 func (k *KVErasureLayer) GetBucketInfo(ctx context.Context, bucket string) (bucketInfo BucketInfo, err error) {
-	if bucket != k.bucketName {
-		return bucketInfo, BucketNotFound{Bucket: bucket}
+	k.listMapMu.Lock()
+	defer k.listMapMu.Unlock()
+	if k.listMap[bucket] == nil {
+		return bucketInfo, BucketNotFound{}
 	}
-	return BucketInfo{k.bucketName, time.Now()}, nil
+	return BucketInfo{bucket, time.Now()}, nil
 }
 
 func (k *KVErasureLayer) PutObject(ctx context.Context, bucket, object string, data *hash.Reader, metadata map[string]string) (objInfo ObjectInfo, err error) {
+	objectLock := globalNSMutex.NewNSLock(bucket, object)
+	if err := objectLock.GetLock(globalObjectTimeout); err != nil {
+		return objInfo, err
+	}
+	defer objectLock.Unlock()
+
 	dataDrives, parityDrives := getRedundancyCount(metadata[amzStorageClass], len(k.disks))
 	erasure := newKVErasure(dataDrives, parityDrives)
 	disks := make([]KVAPI, len(k.disks))
@@ -166,11 +247,17 @@ func (k *KVErasureLayer) PutObject(ctx context.Context, bucket, object string, d
 	objInfo.ModTime = nsEntry.ModTime
 	objInfo.Size = nsEntry.Size
 	objInfo.ETag = nsEntry.ETag
-	k.trie.Insert(patricia.Prefix(object), 1)
+	k.listMapInsert(bucket, object)
 	return objInfo, nil
 }
 
 func (k *KVErasureLayer) GetObjectInfo(ctx context.Context, bucket, object string) (objInfo ObjectInfo, err error) {
+	objectLock := globalNSMutex.NewNSLock(bucket, object)
+	if err := objectLock.GetRLock(globalObjectTimeout); err != nil {
+		return objInfo, err
+	}
+	defer objectLock.RUnlock()
+
 	entries := make([]KVNSEntry, len(k.disks))
 	errs := make([]error, len(k.disks))
 
@@ -206,6 +293,12 @@ func (k *KVErasureLayer) GetObjectInfo(ctx context.Context, bucket, object strin
 }
 
 func (k *KVErasureLayer) DeleteObject(ctx context.Context, bucket, object string) error {
+	objectLock := globalNSMutex.NewNSLock(bucket, object)
+	if err := objectLock.GetLock(globalObjectTimeout); err != nil {
+		return err
+	}
+	defer objectLock.Unlock()
+
 	entries := make([]KVNSEntry, len(k.disks))
 	errs := make([]error, len(k.disks))
 
@@ -259,7 +352,7 @@ func (k *KVErasureLayer) DeleteObject(ctx context.Context, bucket, object string
 	if err := reduceWriteQuorumErrs(context.Background(), errs, nil, quorum); err != nil {
 		return ObjectNotFound{}
 	}
-	k.trie.Delete(patricia.Prefix(object))
+	k.listMapDelete(bucket, object)
 	return nil
 }
 
@@ -289,6 +382,11 @@ func kvQuorumPart(ctx context.Context, entries []KVNSEntry, errs []error) (KVNSE
 }
 
 func (k *KVErasureLayer) GetObject(ctx context.Context, bucket, object string, startOffset int64, length int64, writer io.Writer, etag string) (err error) {
+	objectLock := globalNSMutex.NewNSLock(bucket, object)
+	if err := objectLock.GetRLock(globalObjectTimeout); err != nil {
+		return err
+	}
+	defer objectLock.RUnlock()
 	if startOffset != 0 {
 		return NotImplemented{}
 	}
@@ -338,7 +436,14 @@ func (k *KVErasureLayer) GetObject(ctx context.Context, bucket, object string, s
 func (k *KVErasureLayer) ListObjects(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (result ListObjectsInfo, err error) {
 	var objects []string
 	var commonPrefixes []string
-	k.trie.Visit(func(objectByte patricia.Prefix, item patricia.Item) error {
+	k.listMapMu.Lock()
+	defer k.listMapMu.Unlock()
+
+	trie := k.listMap[bucket]
+	if trie == nil {
+		return result, BucketNotFound{}
+	}
+	trie.Visit(func(objectByte patricia.Prefix, item patricia.Item) error {
 		object := string(objectByte)
 		if !strings.HasPrefix(object, prefix) {
 			return nil
@@ -384,6 +489,14 @@ func (k *KVErasureLayer) ListObjects(ctx context.Context, bucket, prefix, marker
 const kvMultipartPrefix = ".minio.sys/multipart"
 
 func (k *KVErasureLayer) NewMultipartUpload(ctx context.Context, bucket, object string, metadata map[string]string) (uploadID string, err error) {
+	uploadID = mustGetUUID()
+	mpEntryName := pathJoin(kvMultipartPrefix, uploadID, object)
+	objectLock := globalNSMutex.NewNSLock(bucket, mpEntryName)
+	if err := objectLock.GetLock(globalObjectTimeout); err != nil {
+		return "", err
+	}
+	defer objectLock.Unlock()
+
 	dataDrives, parityDrives := getRedundancyCount(metadata[amzStorageClass], len(k.disks))
 	disks := make([]KVAPI, len(k.disks))
 	copy(disks, k.disks)
@@ -397,7 +510,6 @@ func (k *KVErasureLayer) NewMultipartUpload(ctx context.Context, bucket, object 
 		nil,
 		"",
 	}
-	uploadID = mustGetUUID()
 	var buf bytes.Buffer
 	err = json.NewEncoder(&buf).Encode(nsEntry)
 	// err = gob.NewEncoder(&buf).Encode(nsEntry)
@@ -407,7 +519,6 @@ func (k *KVErasureLayer) NewMultipartUpload(ctx context.Context, bucket, object 
 	buf.Write(make([]byte, kvValueSize-buf.Len()))
 	errs := make([]error, len(k.disks))
 	var wg sync.WaitGroup
-	mpEntryName := pathJoin(kvMultipartPrefix, uploadID, object)
 	for i := range k.disks {
 		wg.Add(1)
 		go func(i int) {
@@ -429,6 +540,11 @@ func (k *KVErasureLayer) PutObjectPart(ctx context.Context, bucket, object, uplo
 	disks := make([]KVAPI, len(k.disks))
 	copy(disks, k.disks)
 
+	objectLock := globalNSMutex.NewNSLock(bucket, mpEntryName)
+	if err := objectLock.GetRLock(globalObjectTimeout); err != nil {
+		return info, err
+	}
+
 	var wg sync.WaitGroup
 	for i := range disks {
 		wg.Add(1)
@@ -448,6 +564,7 @@ func (k *KVErasureLayer) PutObjectPart(ctx context.Context, bucket, object, uplo
 		}(i)
 	}
 	wg.Wait()
+	objectLock.RUnlock()
 	entry, err := kvQuorumPart(ctx, entries, errs)
 	if err != nil {
 		logger.LogIf(ctx, err)
@@ -460,6 +577,13 @@ func (k *KVErasureLayer) PutObjectPart(ctx context.Context, bucket, object, uplo
 		logger.LogIf(ctx, err)
 		return info, err
 	}
+
+	objectLock = globalNSMutex.NewNSLock(bucket, mpEntryName)
+	if err := objectLock.GetLock(globalObjectTimeout); err != nil {
+		return info, err
+	}
+	defer objectLock.Unlock()
+
 	kvPart := KVPart{}
 	kvPart.ETag = GenETag()
 	kvPart.IDs = ids
@@ -507,7 +631,19 @@ func (k *KVErasureLayer) ListObjectParts(ctx context.Context, bucket, object, up
 }
 
 func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, object, uploadID string, uploadedParts []CompletePart) (objInfo ObjectInfo, err error) {
+	objectLock := globalNSMutex.NewNSLock(bucket, object)
+	if err := objectLock.GetLock(globalObjectTimeout); err != nil {
+		return objInfo, err
+	}
+	defer objectLock.Unlock()
+
 	mpEntryName := pathJoin(kvMultipartPrefix, uploadID, object)
+	objectLock = globalNSMutex.NewNSLock(bucket, mpEntryName)
+	if err := objectLock.GetLock(globalObjectTimeout); err != nil {
+		return objInfo, err
+	}
+	defer objectLock.Unlock()
+
 	entries := make([]KVNSEntry, len(k.disks))
 	errs := make([]error, len(k.disks))
 	disks := make([]KVAPI, len(k.disks))
@@ -580,6 +716,6 @@ func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, ob
 	objInfo.ModTime = entry.ModTime
 	objInfo.Size = entry.Size
 	objInfo.ETag = entry.ETag
-	k.trie.Insert(patricia.Prefix(object), 1)
+	k.listMapInsert(bucket, object)
 	return objInfo, nil
 }
