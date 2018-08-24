@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/minio/minio/cmd/logger"
@@ -20,6 +21,7 @@ type KV struct {
 	disk       KVAPI
 	GatewayUnsupported
 	trie *patricia.Trie
+	sync.Mutex
 }
 
 func newKV(device string) (*KV, error) {
@@ -125,7 +127,9 @@ func (k *KV) PutObject(ctx context.Context, bucket, object string, data *hash.Re
 	objInfo.ModTime = nsEntry.ModTime
 	objInfo.Size = nsEntry.Size
 	objInfo.ETag = nsEntry.ETag
+	k.Lock()
 	k.trie.Insert(patricia.Prefix(object), 1)
+	k.Unlock()
 	return objInfo, nil
 }
 
@@ -195,13 +199,17 @@ func (k *KV) DeleteObject(ctx context.Context, bucket, object string) error {
 		k.disk.Delete(bucket, blockID)
 	}
 	err = k.disk.Delete(bucket, object)
+	k.Lock()
 	k.trie.Delete(patricia.Prefix(object))
+	k.Unlock()
 	return err
 }
 
 func (k *KV) ListObjects(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (result ListObjectsInfo, err error) {
 	var objects []string
 	var commonPrefixes []string
+	k.Lock()
+	defer k.Unlock()
 	k.trie.Visit(func(objectByte patricia.Prefix, item patricia.Item) error {
 		object := string(objectByte)
 		if !strings.HasPrefix(object, prefix) {
