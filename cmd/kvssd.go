@@ -102,7 +102,7 @@ func on_io_complete_callback(chPtr unsafe.Pointer, errStr *C.char) {
 		return
 	}
 	chContainer := (*chanContainer)(chPtr)
-	KVIOCH <- KVIO{callType: KVCallback, chContainer: chContainer, err: err}
+	chContainer.KVIOCH <- KVIO{callType: KVCallback, chContainer: chContainer, err: err}
 }
 
 type KVCallType int
@@ -115,7 +115,8 @@ const (
 )
 
 type chanContainer struct {
-	c chan error
+	c      chan error
+	KVIOCH chan KVIO
 }
 
 type KVIO struct {
@@ -126,7 +127,7 @@ type KVIO struct {
 	err         error
 }
 
-var KVIOCH chan KVIO
+var kvssdMap = make(map[string]*kvssd)
 
 func (k *kvssd) kv_io() {
 	runtime.LockOSThread()
@@ -135,7 +136,7 @@ func (k *kvssd) kv_io() {
 	for {
 		if callCount == 0 {
 			select {
-			case kvio := <-KVIOCH:
+			case kvio := <-k.KVIOCH:
 				switch kvio.callType {
 				case KVPut:
 					callCount++
@@ -153,7 +154,7 @@ func (k *kvssd) kv_io() {
 			}
 		} else {
 			select {
-			case kvio := <-KVIOCH:
+			case kvio := <-k.KVIOCH:
 				switch kvio.callType {
 				case KVPut:
 					callCount++
@@ -195,6 +196,7 @@ func kvs_close_device(kvd *C.struct_kv_device_api) {
 type kvssd struct {
 	device string
 	kvd    *C.struct_kv_device_api
+	KVIOCH chan KVIO
 }
 
 func newKVSSD(device string) (KVAPI, error) {
@@ -204,13 +206,18 @@ func newKVSSD(device string) (KVAPI, error) {
 	if strings.HasPrefix(device, "/dev/kvemul") {
 		device = "/dev/kvemul"
 	}
-	KVIOCH = make(chan KVIO, 10)
+	k := kvssdMap[device]
+	if k != nil {
+		return k, nil
+	}
+	KVIOCH := make(chan KVIO, 10)
 	kvd := kvs_open_device(device)
 	if kvd == nil {
 		return nil, errDiskNotFound
 	}
-	k := &kvssd{device, kvd}
+	k = &kvssd{device, kvd, KVIOCH}
 	go k.kv_io()
+	kvssdMap[device] = k
 	return k, nil
 }
 
@@ -221,24 +228,24 @@ func kvKeyName(container, key string) []byte {
 func (k *kvssd) Put(container, key string, value []byte) error {
 	kvKey := kvKeyName(container, key)
 	c := make(chan error)
-	chContainer := &chanContainer{c}
-	KVIOCH <- KVIO{callType: KVPut, key: kvKey, value: value, chContainer: chContainer}
+	chContainer := &chanContainer{c, k.KVIOCH}
+	k.KVIOCH <- KVIO{callType: KVPut, key: kvKey, value: value, chContainer: chContainer}
 	return <-chContainer.c
 }
 
 func (k *kvssd) Get(container, key string, value []byte) error {
 	kvKey := kvKeyName(container, key)
 	c := make(chan error)
-	chContainer := &chanContainer{c}
-	KVIOCH <- KVIO{callType: KVGet, key: kvKey, value: value, chContainer: chContainer}
+	chContainer := &chanContainer{c, k.KVIOCH}
+	k.KVIOCH <- KVIO{callType: KVGet, key: kvKey, value: value, chContainer: chContainer}
 	return <-chContainer.c
 }
 
 func (k *kvssd) Delete(container, key string) error {
 	kvKey := kvKeyName(container, key)
 	c := make(chan error)
-	chContainer := &chanContainer{c}
-	KVIOCH <- KVIO{callType: KVDelete, key: kvKey, chContainer: chContainer}
+	chContainer := &chanContainer{c, k.KVIOCH}
+	k.KVIOCH <- KVIO{callType: KVDelete, key: kvKey, chContainer: chContainer}
 	return <-chContainer.c
 }
 
