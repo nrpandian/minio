@@ -140,6 +140,9 @@ func (k *kvParallelReader) Read(ctx context.Context) ([][]byte, error) {
 	}
 	var wg sync.WaitGroup
 	for i := range k.disks {
+		errs[i] = errDiskNotFound
+	}
+	for i := range k.disks[:k.readQuorum] {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
