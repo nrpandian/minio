@@ -9,44 +9,75 @@ package cmd
 #include <string.h>
 #include <dlfcn.h>
 
-#include "kvs_api.h"
+#include "kvs_types.h"
 
-static void minio_kvs_init_env() {
-  kvs_init_options options;
+extern void on_io_complete_callback();
 
-  int32_t i;
-  i = kvs_init_env_opts(&options);
-
-  options.memory.use_dpdk=0;
-  options.aio.iocomplete_fn = NULL;
-  options.emul_config_file = "./nvme.conf";
-
-  kvs_init_env(&options);
+static void on_io_complete(void *private1, void *private2, kvs_result_t op_result) {
+  const char *errStr = NULL;
+  if (op_result.result != KVS_SUCCESS) {
+    errStr = "error in callback";
+  }
+  on_io_complete_callback(private1, errStr);
 }
 
-static int32_t minio_kvs_put(kvs_container_handle handle, void *key, int keyLen, void *value, int valueLen) {
+static void minio_kvs_init_env() {
+  aio_context aiocontext;
+  aiocontext.num_aiothreads_per_device = 1;
+  aiocontext.num_devices_per_aiothread = 1;
+  aiocontext.queuedepth = 128;
+  aiocontext.io_complete = on_io_complete;
+
+  int ret = kvs_init_env_ex(0, &aiocontext, 0);
+  if (ret != KVS_SUCCESS) {
+    printf("kvs_init_env() returned error");
+  }
+}
+
+static int minio_kvs_open_device(char *device) {
+  return kvs_open_device(device, 8);
+}
+
+static void minio_kvs_close_device(int devid) {
+  kvs_close_device(devid);
+}
+
+static int minio_kvs_create_container(int devid) {
+  kvs_group_by group;
+  group.index_count = 3;
+  group.key_index[0] = 0;
+  group.key_index[1] = 1;
+  group.key_index[2] = 2;
+  group.ordered = KVS_GROUP_ORDER_NONE;
+  return kvs_create_container(devid, "default", KVS_KEY_STRING, 0, &group);
+}
+
+static int32_t minio_kvs_put(int devid, int containerid, void *key, int keyLen, void *value, int valueLen, uint64_t chPtr) {
     kvs_key kvskey = {key, keyLen};
     kvs_value kvsvalue = {value, valueLen, 0};
-    const kvs_store_context put_ctx = { KVS_STORE_POST|KVS_SYNC_IO, 0, NULL, NULL};
+    const kvs_store_context put_ctx = { KVS_STORE_POST, 0, (void*)chPtr, NULL};
 
-    int i = kvs_store_tuple(handle, &kvskey, &kvsvalue, &put_ctx);
+    int i = kvs_store_tuple(devid, containerid, &kvskey, &kvsvalue, &put_ctx);
     if (i) printf("kvs_store_tuple retval = %d\n", i);
     return i;
 }
 
-static int32_t minio_kvs_get(kvs_container_handle handle,  void *key, int keyLen, void *value, int valueLen) {
+static int32_t minio_kvs_get(int devid, int containerid, void *key, int keyLen, void *value, int valueLen, uint64_t chPtr) {
     kvs_key kvskey = {key, keyLen};
     kvs_value kvsvalue = {value, valueLen, 0};
-    const kvs_retrieve_context ret_ctx = { KVS_RETRIEVE_IDEMPOTENT|KVS_SYNC_IO, 0, NULL, NULL };
-    int i = kvs_retrieve_tuple(handle, &kvskey, &kvsvalue, &ret_ctx);
+    const kvs_retrieve_context ret_ctx = { KVS_RETRIEVE_IDEMPOTENT, 0, (void*)chPtr, NULL };
+    int i = kvs_retrieve_tuple(devid, containerid, &kvskey, &kvsvalue, &ret_ctx);
     if (i) printf("kvs_retrieve_tuple retval = %d\n", i);
     return i;
 }
 
-static int32_t minio_kvs_delete(kvs_container_handle handle,  void *key, int keyLen) {
-    kvs_delete_context del_ctx = { KVS_DELETE_TUPLE|KVS_SYNC_IO, 0, NULL, NULL };
+static int32_t minio_kvs_delete(int devid, int containerid,  void *key, int keyLen, uint64_t chPtr) {
+    kvs_delete_context del_ctx = {KVS_DELETE_TUPLE};
+    del_ctx.private1 = (void*) chPtr;
+
+//    kvs_delete_context del_ctx = { KVS_DELETE_TUPLE, 0, (void*)chPtr, NULL };
     kvs_key kvskey = {key, keyLen};
-    int i = kvs_delete_tuple(handle, &kvskey, &del_ctx);
+    int i = kvs_delete_tuple(devid, containerid, &kvskey, &del_ctx);
     if (i) printf("kvs_delete_tuple retval = %d\n", i);
     return i;
 }
@@ -57,20 +88,87 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
-	"time"
 	"unsafe"
 )
+
+//export on_io_complete_callback
+func on_io_complete_callback(chPtr unsafe.Pointer, errStr *C.char) {
+	var err error
+	if errStr != nil {
+		err = errors.New(C.GoString(errStr))
+	}
+	if chPtr == nil {
+		fmt.Println("chPtr is nil")
+		return
+	}
+	chContainer := (*chanContainer)(chPtr)
+	KVIOCH <- KVIO{callType: KVCallback, chContainer: chContainer, err: err}
+}
+
+type KVCallType int
+
+const (
+	KVPut KVCallType = iota
+	KVGet
+	KVDelete
+	KVCallback
+)
+
+type chanContainer struct {
+	c chan error
+}
+
+type KVIO struct {
+	callType    KVCallType
+	key         []byte
+	value       []byte
+	chContainer *chanContainer
+	err         error
+}
+
+var KVIOCH chan KVIO
+
+func (k *kvssd) kv_io() {
+	runtime.LockOSThread()
+	chanContainerMap := make(map[*chanContainer]bool)
+	for {
+		kvio := <-KVIOCH
+		switch kvio.callType {
+		case KVPut:
+			chanContainerMap[kvio.chContainer] = true
+			C.minio_kvs_put(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), unsafe.Pointer(&kvio.value[0]), C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
+		case KVGet:
+			chanContainerMap[kvio.chContainer] = true
+			C.minio_kvs_get(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), unsafe.Pointer(&kvio.value[0]), C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
+		case KVDelete:
+			chanContainerMap[kvio.chContainer] = true
+			C.minio_kvs_delete(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
+		case KVCallback:
+			kvio.chContainer.c <- kvio.err
+			delete(chanContainerMap, kvio.chContainer)
+		}
+	}
+}
 
 func kvs_init_env() {
 	C.minio_kvs_init_env()
 }
 
+func kvs_open_device(device string) _Ctype_int {
+	deviceCstr := C.CString(device)
+	return C.minio_kvs_open_device(deviceCstr)
+}
+
+// func kvs_close_device() {
+// 	C.minio_kvs_close_device(kvd)
+// }
+
 type kvssd struct {
-	device            string
-	kvDeviceHandle    C.kvs_device_handle
-	kvContainerCtx    C.struct___0
-	kvContainerHandle C.kvs_container_handle
+	device string
+	devid _Ctype_int
+	containerid _Ctype_int
 }
 
 func newKVSSD(device string) (KVAPI, error) {
@@ -80,12 +178,20 @@ func newKVSSD(device string) (KVAPI, error) {
 	if strings.HasPrefix(device, "/dev/kvemul") {
 		device = "/dev/kvemul"
 	}
-	kvs_init_env()
-	k := &kvssd{device: device}
-	C.kvs_open_device(C.CString(device), &k.kvDeviceHandle)
-	containerStr := C.CString("test")
-	C.kvs_create_container(k.kvDeviceHandle, containerStr, 0, &k.kvContainerCtx)
-	C.kvs_open_container(k.kvDeviceHandle, containerStr, &k.kvContainerHandle)
+	KVIOCH = make(chan KVIO, 10)
+fmt.Println("calling kvs_open_device", device)
+	devid := kvs_open_device(device)
+fmt.Println("kvs_open_device() returned", devid)
+	if devid < 0 {
+		return nil, errDiskNotFound
+	}
+	containerid := C.minio_kvs_create_container(devid)
+	if containerid < 0 {
+	   fmt.Printf("container id < 0")
+	   return nil, errUnexpected
+	}
+	k := &kvssd{device, devid, containerid}
+	go k.kv_io()
 	return k, nil
 }
 
@@ -95,59 +201,26 @@ func kvKeyName(container, key string) []byte {
 
 func (k *kvssd) Put(container, key string, value []byte) error {
 	kvKey := kvKeyName(container, key)
-	timer := time.NewTimer(5 * time.Second)
-	doneCh := make(chan struct{})
-	go func() {
-		C.minio_kvs_put(k.kvContainerHandle, unsafe.Pointer(&kvKey[0]), C.int(len(kvKey)), unsafe.Pointer(&value[0]), C.int(len(value)))
-		close(doneCh)
-	}()
-	select {
-	case <-timer.C:
-		fmt.Printf("put(%s) timedout\n", key)
-		return errors.New("timeout")
-	case <-doneCh:
-		timer.Stop()
-		break
-	}
-	return nil
+	c := make(chan error)
+	chContainer := &chanContainer{c}
+	KVIOCH <- KVIO{callType: KVPut, key: kvKey, value: value, chContainer: chContainer}
+	return <-chContainer.c
 }
 
 func (k *kvssd) Get(container, key string, value []byte) error {
 	kvKey := kvKeyName(container, key)
-	timer := time.NewTimer(5 * time.Second)
-	doneCh := make(chan struct{})
-	go func() {
-		C.minio_kvs_get(k.kvContainerHandle, unsafe.Pointer(&kvKey[0]), C.int(len(kvKey)), unsafe.Pointer(&value[0]), C.int(len(value)))
-		close(doneCh)
-	}()
-	select {
-	case <-timer.C:
-		fmt.Printf("get(%s) timedout\n", key)
-		return errors.New("timeout")
-	case <-doneCh:
-		timer.Stop()
-		break
-	}
-	return nil
+	c := make(chan error)
+	chContainer := &chanContainer{c}
+	KVIOCH <- KVIO{callType: KVGet, key: kvKey, value: value, chContainer: chContainer}
+	return <-chContainer.c
 }
 
 func (k *kvssd) Delete(container, key string) error {
 	kvKey := kvKeyName(container, key)
-	timer := time.NewTimer(5 * time.Second)
-	doneCh := make(chan struct{})
-	go func() {
-		C.minio_kvs_delete(k.kvContainerHandle, unsafe.Pointer(&kvKey[0]), C.int(len(kvKey)))
-		close(doneCh)
-	}()
-	select {
-	case <-timer.C:
-		fmt.Printf("delete(%s) timedout\n", key)
-		return errors.New("timeout")
-	case <-doneCh:
-		timer.Stop()
-		break
-	}
-	return nil
+	c := make(chan error)
+	chContainer := &chanContainer{c}
+	KVIOCH <- KVIO{callType: KVDelete, key: kvKey, chContainer: chContainer}
+	return <-chContainer.c
 }
 
 func (k *kvssd) List() ([]string, error) {

@@ -172,8 +172,9 @@ func serverMain(ctx *cli.Context) {
 	if quietFlag {
 		logger.EnableQuiet()
 	}
-
+	fmt.Println("calling kvs_init_env")
 	kvs_init_env()
+	fmt.Println("returned kvs_init_env")
 	// Handle all server command args.
 	serverHandleCmdArgs(ctx)
 
