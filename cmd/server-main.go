@@ -258,12 +258,14 @@ func serverMain(ctx *cli.Context) {
 	signal.Notify(globalOSSignalCh, os.Interrupt, syscall.SIGTERM)
 
 	var newObject ObjectLayer
-	if len(globalEndpoints) == 1 {
-		newObject, err = newKV(globalEndpoints[0].Path)
-	} else {
-		logger.FatalIf(fmt.Errorf("erasure kv not enabled"), "")
-		// newObject, err = newKVErasureLayer(globalEndpoints)
-	}
+	// if len(globalEndpoints) == 1 {
+	// 	// newObject, err = newKV(globalEndpoints[0].Path)
+	// 	logger.FatalIf(fmt.Errorf("only multi drive supported"), "")
+	// } else {
+	// 	// logger.FatalIf(fmt.Errorf("erasure kv not enabled"), "")
+	// 	newObject, err = newKVErasureLayer(globalEndpoints)
+	// }
+	newObject, err = newKVErasureLayer(globalEndpoints)
 	if err != nil {
 		// Stop watching for any certificate changes.
 		globalTLSCerts.Stop()

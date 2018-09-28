@@ -1,5 +1,3 @@
-// +build ignore
-
 package cmd
 
 import (
@@ -10,14 +8,11 @@ import (
 	"os"
 	"sync"
 	"time"
+	"unsafe"
 
 	"strings"
 
-	"sort"
-
 	"encoding/json"
-
-	"strconv"
 
 	"github.com/minio/minio/cmd/logger"
 	"github.com/minio/minio/pkg/hash"
@@ -67,9 +62,10 @@ func newKVErasureLayer(endpoints EndpointList) (*KVErasureLayer, error) {
 		var disk KVAPI
 		var err error
 		if endpoint.IsLocal {
-			disk, err = newKVSSD(endpoint.Path)
+			disk, err = newKVXFS(endpoint.Path)
 		} else {
-			disk = newKVRPC(endpoint)
+			// disk = newKVRPC(endpoint)
+			logger.FatalIf(fmt.Errorf("distributed minio not supported"), "exiting")
 		}
 		if err != nil {
 			return nil, err
@@ -163,7 +159,7 @@ func (k *KVErasureLayer) PutObject(ctx context.Context, bucket, object string, d
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = k.disks[i].Put(bucket, object, buf.Bytes())
+			errs[i] = k.disks[i].Put(bucket, object, unsafe.Pointer(&buf.Bytes()[0]))
 		}(i)
 	}
 	wg.Wait()
@@ -195,7 +191,7 @@ func (k *KVErasureLayer) GetObjectInfo(ctx context.Context, bucket, object strin
 		go func(i int) {
 			defer wg.Done()
 			b := make([]byte, kvValueSize)
-			errs[i] = k.disks[i].Get(bucket, object, b)
+			errs[i] = k.disks[i].Get(bucket, object, unsafe.Pointer(&b[0]))
 			if errs[i] != nil {
 				return
 			}
@@ -236,7 +232,7 @@ func (k *KVErasureLayer) DeleteObject(ctx context.Context, bucket, object string
 		go func(i int) {
 			defer wg.Done()
 			b := make([]byte, kvValueSize)
-			errs[i] = k.disks[i].Get(bucket, object, b)
+			errs[i] = k.disks[i].Get(bucket, object, unsafe.Pointer(&b[0]))
 			if errs[i] != nil {
 				return
 			}
@@ -327,7 +323,7 @@ func (k *KVErasureLayer) GetObject(ctx context.Context, bucket, object string, s
 		go func(i int) {
 			defer wg.Done()
 			b := make([]byte, kvValueSize)
-			errs[i] = k.disks[i].Get(bucket, object, b)
+			errs[i] = k.disks[i].Get(bucket, object, unsafe.Pointer(&b[0]))
 			if errs[i] != nil {
 				return
 			}
@@ -451,7 +447,7 @@ func (k *KVErasureLayer) NewMultipartUpload(ctx context.Context, bucket, object 
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = k.disks[i].Put(bucket, mpEntryName, buf.Bytes())
+			errs[i] = k.disks[i].Put(bucket, mpEntryName, unsafe.Pointer(&buf.Bytes()[0]))
 		}(i)
 	}
 	wg.Wait()
@@ -479,7 +475,7 @@ func (k *KVErasureLayer) PutObjectPart(ctx context.Context, bucket, object, uplo
 		go func(i int) {
 			defer wg.Done()
 			b := make([]byte, kvValueSize)
-			errs[i] = disks[i].Get(bucket, mpEntryName, b)
+			errs[i] = disks[i].Get(bucket, mpEntryName, unsafe.Pointer(&b[0]))
 			if errs[i] != nil {
 				disks[i] = nil
 				return
@@ -535,7 +531,7 @@ func (k *KVErasureLayer) PutObjectPart(ctx context.Context, bucket, object, uplo
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = k.disks[i].Put(bucket, mpEntryName, buf.Bytes())
+			errs[i] = k.disks[i].Put(bucket, mpEntryName, unsafe.Pointer(&buf.Bytes()[0]))
 		}(i)
 	}
 	wg.Wait()
@@ -583,7 +579,7 @@ func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, ob
 		go func(i int) {
 			defer wg.Done()
 			b := make([]byte, kvValueSize)
-			errs[i] = disks[i].Get(bucket, mpEntryName, b)
+			errs[i] = disks[i].Get(bucket, mpEntryName, unsafe.Pointer(&b[0]))
 			if errs[i] != nil {
 				disks[i] = nil
 				return
@@ -632,7 +628,7 @@ func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, ob
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = k.disks[i].Put(bucket, object, buf.Bytes())
+			errs[i] = k.disks[i].Put(bucket, object, unsafe.Pointer(&buf.Bytes()[0]))
 		}(i)
 	}
 	wg.Wait()

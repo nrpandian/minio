@@ -1,3 +1,5 @@
+// +build ignore
+
 package cmd
 
 /*
@@ -177,15 +179,15 @@ type kvssd struct {
 
 func newKVSSD(device string) (KVAPI, error) {
 	if strings.HasPrefix(device, "/dev/xfs") {
-	        return nil, errUnexpected
+		return nil, errUnexpected
 	}
 	if strings.HasPrefix(device, "/dev/kvemul") {
 		device = "/dev/kvemul"
 	}
 	KVIOCH = make(chan KVIO, 1024)
-//	fmt.Println("calling kvs_open_device", device)
+	//	fmt.Println("calling kvs_open_device", device)
 	devid := kvs_open_device(device)
-//	fmt.Println("kvs_open_device() returned", devid)
+	//	fmt.Println("kvs_open_device() returned", devid)
 	if devid < 0 {
 		return nil, errDiskNotFound
 	}

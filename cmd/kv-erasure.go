@@ -1,11 +1,10 @@
-// +build ignore
-
 package cmd
 
 import (
 	"context"
 	"io"
 	"sync"
+	"unsafe"
 
 	"github.com/klauspost/reedsolomon"
 	"github.com/minio/minio/cmd/logger"
@@ -52,9 +51,15 @@ func (k *KVErasure) DecodeData(ctx context.Context, blocks [][]byte) error {
 }
 
 func newKVErasure(dataNum, parityNum int) *KVErasure {
-	encoder, err := reedsolomon.New(dataNum, parityNum)
-	if err != nil {
-		panic(err.Error())
+	var encoder reedsolomon.Encoder
+	var err error
+	if parityNum == 0 {
+		encoder = newStripeEncoder(dataNum)
+	} else {
+		encoder, err = reedsolomon.New(dataNum, parityNum)
+		if err != nil {
+			panic(err.Error())
+		}
 	}
 	blockSize := dataNum * kvValueSize
 	return &KVErasure{encoder, dataNum, parityNum, blockSize}
@@ -78,7 +83,7 @@ func (p *kvParallelWriter) Put(ctx context.Context, key string, blocks [][]byte)
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = p.disks[i].Put(p.bucket, key, blocks[i])
+			errs[i] = p.disks[i].Put(p.bucket, key, unsafe.Pointer(&blocks[i][0]))
 			if errs[i] != nil {
 				p.disks[i] = nil
 			}
@@ -148,7 +153,7 @@ func (k *kvParallelReader) Read(ctx context.Context) ([][]byte, error) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = k.disks[i].Get(k.bucket, k.ids[k.currentId], k.blocks[i])
+			errs[i] = k.disks[i].Get(k.bucket, k.ids[k.currentId], unsafe.Pointer(&k.blocks[i][0]))
 			if errs[i] != nil && errs[i].Error() == "EOF" {
 				errs[i] = errFileNotFound
 			}

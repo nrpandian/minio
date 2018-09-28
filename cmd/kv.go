@@ -1,3 +1,5 @@
+// +build ignore
+
 package cmd
 
 /*
@@ -15,7 +17,7 @@ package cmd
 import "C"
 
 import (
-        "bytes"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -67,8 +69,8 @@ func (k *KV) WriteStream(ctx context.Context, disk KVAPI, bucket string, reader 
 	cbuf := C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
 	defer C._kvs_free(cbuf, nil)
 
-	length := 28*1024
-	buf := (*[1<<30]byte)(unsafe.Pointer(cbuf))[:length:length]
+	length := 28 * 1024
+	buf := (*[1 << 30]byte)(unsafe.Pointer(cbuf))[:length:length]
 
 	var ids []string
 	var total int64
@@ -100,8 +102,8 @@ func (k *KV) ReadStream(ctx context.Context, bucket string, ids []string, length
 	cbuf := C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
 	defer C._kvs_free(cbuf, nil)
 
-	l := 28*1024
-	buf := (*[1<<30]byte)(unsafe.Pointer(cbuf))[:l:l]
+	l := 28 * 1024
+	buf := (*[1 << 30]byte)(unsafe.Pointer(cbuf))[:l:l]
 
 	for _, id := range ids {
 		err := k.disk.Get(bucket, id, cbuf)
@@ -137,8 +139,8 @@ func (k *KV) PutObject(ctx context.Context, bucket, object string, data *hash.Re
 	cbuf := C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
 	defer C._kvs_free(cbuf, nil)
 
-	length := 28*1024
-	b := (*[1<<30]byte)(unsafe.Pointer(cbuf))[:length:length]
+	length := 28 * 1024
+	b := (*[1 << 30]byte)(unsafe.Pointer(cbuf))[:length:length]
 
 	nsdata, err := json.Marshal(&nsEntry)
 	// err = json.NewEncoder(buf).Encode(nsEntry)
@@ -152,8 +154,8 @@ func (k *KV) PutObject(ctx context.Context, bucket, object string, data *hash.Re
 	// 	return objInfo, errUnexpected
 	// }
 	if len(nsdata) > len(b) {
-	        logger.LogIf(ctx, errUnexpected)
-	        return objInfo, errUnexpected
+		logger.LogIf(ctx, errUnexpected)
+		return objInfo, errUnexpected
 	}
 	copy(b, nsdata)
 	err = k.disk.Put(k.bucketName, object, cbuf)
@@ -169,13 +171,13 @@ func (k *KV) PutObject(ctx context.Context, bucket, object string, data *hash.Re
 	k.trie.Insert(patricia.Prefix(object), 1)
 	k.Unlock()
 
-//	fmt.Printf("gKVPUT compl k:%s klen:%d vlen:%d\n", object, len(object), len(nsdata))
+	//	fmt.Printf("gKVPUT compl k:%s klen:%d vlen:%d\n", object, len(object), len(nsdata))
 
 	return objInfo, nil
 }
 
 func (k *KV) GetObject(ctx context.Context, bucket, object string, startOffset int64, length int64, writer io.Writer, etag string) (err error) {
-//	fmt.Printf("gKVGET beg k:%s klen:%d vlen:%d\n", object, len(object), length)
+	//	fmt.Printf("gKVGET beg k:%s klen:%d vlen:%d\n", object, len(object), length)
 	if startOffset != 0 {
 		return NotImplemented{}
 	}
@@ -188,8 +190,8 @@ func (k *KV) GetObject(ctx context.Context, bucket, object string, startOffset i
 		return err
 	}
 
-	l := 28*1024
-	b := (*[1<<30]byte)(unsafe.Pointer(cbuf))[:l:l]
+	l := 28 * 1024
+	b := (*[1 << 30]byte)(unsafe.Pointer(cbuf))[:l:l]
 
 	var entry KVNSEntry
 	// err = json.Unmarshal(bytes.TrimRight(b, "\x00"), &entry)
@@ -205,23 +207,23 @@ func (k *KV) GetObject(ctx context.Context, bucket, object string, startOffset i
 			return err
 		}
 	}
-//	fmt.Printf("gKVGET compl k:%s klen:%d vlen:%d\n", object, len(object), length)
+	//	fmt.Printf("gKVGET compl k:%s klen:%d vlen:%d\n", object, len(object), length)
 	return nil
 }
 
 func (k *KV) GetObjectInfo(ctx context.Context, bucket, object string) (objInfo ObjectInfo, err error) {
-//	fmt.Printf("gKVGETINFO beg k:%s klen:%d vlen:%d\n", object, len(object), kvValueSize)
+	//	fmt.Printf("gKVGETINFO beg k:%s klen:%d vlen:%d\n", object, len(object), kvValueSize)
 	cbuf := C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
 	defer C._kvs_free(cbuf, nil)
 
 	err = k.disk.Get(bucket, object, cbuf)
 	if err != nil {
-//		fmt.Printf("gKVGETINFO err k:%s klen:%d vlen:%d\n", object, len(object), kvValueSize)
+		//		fmt.Printf("gKVGETINFO err k:%s klen:%d vlen:%d\n", object, len(object), kvValueSize)
 		return objInfo, ObjectNotFound{}
 	}
 
-	length := 28*1024
-	b := (*[1<<30]byte)(unsafe.Pointer(cbuf))[:length:length]
+	length := 28 * 1024
+	b := (*[1 << 30]byte)(unsafe.Pointer(cbuf))[:length:length]
 
 	var entry KVNSEntry
 	// err = json.Unmarshal(bytes.TrimRight(b, "\x00"), &entry)
@@ -236,7 +238,7 @@ func (k *KV) GetObjectInfo(ctx context.Context, bucket, object string) (objInfo 
 	objInfo.ModTime = entry.ModTime
 	objInfo.Size = int64(entry.Size)
 	objInfo.ETag = entry.ETag
-//	fmt.Printf("gKVGETINFO compl k:%s klen:%d vlen:%d\n", object, len(object), kvValueSize)
+	//	fmt.Printf("gKVGETINFO compl k:%s klen:%d vlen:%d\n", object, len(object), kvValueSize)
 	return objInfo, nil
 }
 
@@ -249,8 +251,8 @@ func (k *KV) DeleteObject(ctx context.Context, bucket, object string) error {
 		return err
 	}
 
-	length := 28*1024
-	b := (*[1<<30]byte)(unsafe.Pointer(cbuf))[:length:length]
+	length := 28 * 1024
+	b := (*[1 << 30]byte)(unsafe.Pointer(cbuf))[:length:length]
 
 	err = json.NewDecoder(bytes.NewReader(b)).Decode(&entry)
 	// errs[i] = gob.NewDecoder(bytes.NewBuffer(b)).Decode(&entries[i])
