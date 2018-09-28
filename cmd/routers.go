@@ -37,7 +37,7 @@ func newCacheObjectsFn() CacheObjectLayer {
 func registerDistXLRouters(router *mux.Router, endpoints EndpointList) {
 	// Register storage rpc router only if its a distributed setup.
 	// registerStorageRPCRouters(router, endpoints)
-	registerKVRPCRouters(router, endpoints)
+	// registerKVRPCRouters(router, endpoints)
 
 	// Register distributed namespace lock.
 	registerDistNSLockRouter(router)

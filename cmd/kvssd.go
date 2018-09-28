@@ -57,7 +57,7 @@ static int32_t minio_kvs_put(int devid, int containerid, void *key, int keyLen, 
     kvs_value kvsvalue = {value, valueLen, 0};
     const kvs_store_context put_ctx = { KVS_STORE_POST, 0, (void*)chPtr, NULL};
 
-printf("PUT: key:%s len:%d vlen:%d\n", key, keyLen, valueLen);
+//printf("PUT: key:%16x%16x len:%d vlen:%d\n", *(int*)key, *(((int*)key)+1), keyLen, valueLen);
     int i = kvs_store_tuple(devid, containerid, &kvskey, &kvsvalue, &put_ctx);
     if (i) printf("kvs_store_tuple retval = %d\n", i);
     return i;
@@ -66,7 +66,7 @@ printf("PUT: key:%s len:%d vlen:%d\n", key, keyLen, valueLen);
 static int32_t minio_kvs_get(int devid, int containerid, void *key, int keyLen, void *value, int valueLen, uint64_t chPtr) {
     kvs_key kvskey = {key, 16};
     kvs_value kvsvalue = {value, valueLen, 0};
-printf("GET: key:%s len:%d vlen:%d\n", key, keyLen, valueLen);
+//printf("GET: key:%16x%16x len:%d vlen:%d\n", *(int*)key, *(((int*)key)+1), keyLen, valueLen);
     const kvs_retrieve_context ret_ctx = { KVS_RETRIEVE_IDEMPOTENT, 0, (void*)chPtr, NULL };
     int i = kvs_retrieve_tuple(devid, containerid, &kvskey, &kvsvalue, &ret_ctx);
     if (i) printf("kvs_retrieve_tuple retval = %d\n", i);
@@ -79,7 +79,7 @@ static int32_t minio_kvs_delete(int devid, int containerid,  void *key, int keyL
 
 //    kvs_delete_context del_ctx = { KVS_DELETE_TUPLE, 0, (void*)chPtr, NULL };
     kvs_key kvskey = {key, 16};
-printf("DEL: key:%s len:%d\n", key, keyLen);
+//printf("DEL: key:%16x%16x len:%d\n", *(int*)key, *(((int*)key)+1), keyLen);
     int i = kvs_delete_tuple(devid, containerid, &kvskey, &del_ctx);
     if (i) printf("kvs_delete_tuple retval = %d\n", i);
     return i;
@@ -126,11 +126,9 @@ type chanContainer struct {
 type KVIO struct {
 	callType    KVCallType
 	key         []byte
-	value       []byte
+	value       unsafe.Pointer
 	chContainer *chanContainer
 	err         error
-	vptr unsafe.Pointer
-	ioType    KVCallType
 }
 
 var KVIOCH chan KVIO
@@ -142,28 +140,16 @@ func (k *kvssd) kv_io() {
 		kvio := <-KVIOCH
 		switch kvio.callType {
 		case KVPut:
-			kvio.ioType = kvio.callType
-			kvio.vptr = C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
-			C.memcpy(kvio.vptr, unsafe.Pointer(&kvio.value[0]), (28 * 1024))
 			chanContainerMap[kvio.chContainer] = true
-			C.minio_kvs_put(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), kvio.vptr, C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
-			//C.minio_kvs_put(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), unsafe.Pointer(&kvio.value[0]), C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
+			C.minio_kvs_put(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), kvio.value, C.int(28*1024), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 		case KVGet:
-			kvio.ioType = kvio.callType
-			kvio.vptr = C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
 			chanContainerMap[kvio.chContainer] = true
-			C.minio_kvs_get(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), kvio.vptr, C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
-			//C.minio_kvs_get(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), unsafe.Pointer(&kvio.value[0]), C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
+			//C.minio_kvs_get(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), kvio.vptr, C.int(28*1024), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
+			C.minio_kvs_get(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), kvio.value, C.int(28*1024), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 		case KVDelete:
 			chanContainerMap[kvio.chContainer] = true
 			C.minio_kvs_delete(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 		case KVCallback:
-			if(kvio.ioType == KVGet){
-				C.memcpy(unsafe.Pointer(&kvio.value[0]), kvio.vptr, (28 * 1024))
-			}
-			fmt.Printf("complete:%d klen:%d, vlen:%d Err: %s\n", C.int(kvio.ioType), C.int(len(kvio.key)), C.size_t(len(kvio.value)), kvio.err) 
-			C._kvs_free(kvio.vptr, nil)
-			kvio.vptr = nil
 			kvio.chContainer.c <- kvio.err
 			delete(chanContainerMap, kvio.chContainer)
 		}
@@ -184,29 +170,29 @@ func kvs_open_device(device string) _Ctype_int {
 // }
 
 type kvssd struct {
-	device string
-	devid _Ctype_int
+	device      string
+	devid       _Ctype_int
 	containerid _Ctype_int
 }
 
 func newKVSSD(device string) (KVAPI, error) {
 	if strings.HasPrefix(device, "/dev/xfs") {
-		return newKVXFS(device)
+	        return nil, errUnexpected
 	}
 	if strings.HasPrefix(device, "/dev/kvemul") {
 		device = "/dev/kvemul"
 	}
-	KVIOCH = make(chan KVIO, 10)
-fmt.Println("calling kvs_open_device", device)
+	KVIOCH = make(chan KVIO, 1024)
+//	fmt.Println("calling kvs_open_device", device)
 	devid := kvs_open_device(device)
-fmt.Println("kvs_open_device() returned", devid)
+//	fmt.Println("kvs_open_device() returned", devid)
 	if devid < 0 {
 		return nil, errDiskNotFound
 	}
 	containerid := C.minio_kvs_create_container(devid)
 	if containerid < 0 {
-	   fmt.Printf("container id < 0")
-	   return nil, errUnexpected
+		fmt.Printf("container id < 0")
+		return nil, errUnexpected
 	}
 	k := &kvssd{device, devid, containerid}
 	go k.kv_io()
@@ -217,7 +203,7 @@ func kvKeyName(container, key string) []byte {
 	return getSHA256Sum([]byte(pathJoin(container, key)))[:16]
 }
 
-func (k *kvssd) Put(container, key string, value []byte) error {
+func (k *kvssd) Put(container, key string, value unsafe.Pointer) error {
 	kvKey := kvKeyName(container, key)
 	c := make(chan error)
 	chContainer := &chanContainer{c}
@@ -225,7 +211,7 @@ func (k *kvssd) Put(container, key string, value []byte) error {
 	return <-chContainer.c
 }
 
-func (k *kvssd) Get(container, key string, value []byte) error {
+func (k *kvssd) Get(container, key string, value unsafe.Pointer) error {
 	kvKey := kvKeyName(container, key)
 	c := make(chan error)
 	chContainer := &chanContainer{c}

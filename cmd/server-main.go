@@ -261,7 +261,8 @@ func serverMain(ctx *cli.Context) {
 	if len(globalEndpoints) == 1 {
 		newObject, err = newKV(globalEndpoints[0].Path)
 	} else {
-		newObject, err = newKVErasureLayer(globalEndpoints)
+		logger.FatalIf(fmt.Errorf("erasure kv not enabled"), "")
+		// newObject, err = newKVErasureLayer(globalEndpoints)
 	}
 	if err != nil {
 		// Stop watching for any certificate changes.

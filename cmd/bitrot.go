@@ -21,7 +21,7 @@ import (
 	"errors"
 	"hash"
 
-//	"github.com/minio/highwayhash"
+	//	"github.com/minio/highwayhash"
 	"github.com/minio/minio/cmd/logger"
 	"github.com/minio/sha256-simd"
 	"golang.org/x/crypto/blake2b"
@@ -62,8 +62,8 @@ func (a BitrotAlgorithm) New() hash.Hash {
 		b2, _ := blake2b.New512(nil) // New512 never returns an error if the key is nil
 		return b2
 	case HighwayHash256:
-//		hh, _ := highwayhash.New(magicHighwayHash256Key) // New will never return error since key is 256 bit
-//		return hh
+		//		hh, _ := highwayhash.New(magicHighwayHash256Key) // New will never return error since key is 256 bit
+		//		return hh
 		return nil
 	default:
 		logger.CriticalIf(context.Background(), errors.New("Unsupported bitrot algorithm"))
