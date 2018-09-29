@@ -3,7 +3,6 @@ package cmd
 import (
 	"io/ioutil"
 	"os"
-	"unsafe"
 )
 
 type kvxfs struct {
@@ -23,14 +22,12 @@ func (k *kvxfs) keyName(container, key string) string {
 	return getSHA256Hash([]byte(pathJoin(container, key)))[:16]
 }
 
-func (k *kvxfs) Put(container, key string, valueUnsafe unsafe.Pointer) error {
-	value := (*[1 << 30]byte)(unsafe.Pointer(valueUnsafe))[:kvValueSize:kvValueSize]
+func (k *kvxfs) Put(container, key string, value []byte) error {
 	kvKey := k.keyName(container, key)
 	return ioutil.WriteFile(pathJoin(k.dir, kvKey), value, 0666)
 }
 
-func (k *kvxfs) Get(container, key string, valueUnsafe unsafe.Pointer) error {
-	value := (*[1 << 30]byte)(unsafe.Pointer(valueUnsafe))[:kvValueSize:kvValueSize]
+func (k *kvxfs) Get(container, key string, value []byte) error {
 	kvKey := k.keyName(container, key)
 	b, err := ioutil.ReadFile(pathJoin(k.dir, kvKey))
 	if err != nil {
@@ -61,4 +58,20 @@ func (k *kvxfs) List() ([]string, error) {
 
 func kvs_init_env() {
 
+}
+
+func kvAlloc() []byte {
+	return make([]byte, kvValueSize)
+}
+
+func kvAllocBloc() []byte {
+	return make([]byte, len(globalEndpoints)*kvValueSize)
+}
+
+func kvFree(buf []byte) {
+	return
+}
+
+func kvFreeBlock(buf []byte) {
+	return
 }

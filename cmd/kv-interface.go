@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/minio/minio/cmd/logger"
 	"github.com/tchap/go-patricia/patricia"
@@ -88,8 +87,8 @@ func (k *KVListMap) deleteObject(bucket, object string) {
 }
 
 type KVAPI interface {
-	Put(string, string, unsafe.Pointer) error
-	Get(string, string, unsafe.Pointer) error
+	Put(string, string, []byte) error
+	Get(string, string, []byte) error
 	Delete(string, string) error
 	List() ([]string, error)
 }

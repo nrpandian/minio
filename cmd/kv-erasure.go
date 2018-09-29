@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
-	"unsafe"
 
 	"github.com/klauspost/reedsolomon"
 	"github.com/minio/minio/cmd/logger"
@@ -83,7 +83,7 @@ func (p *kvParallelWriter) Put(ctx context.Context, key string, blocks [][]byte)
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = p.disks[i].Put(p.bucket, key, unsafe.Pointer(&blocks[i][0]))
+			errs[i] = p.disks[i].Put(p.bucket, key, blocks[i])
 			if errs[i] != nil {
 				p.disks[i] = nil
 			}
@@ -95,8 +95,9 @@ func (p *kvParallelWriter) Put(ctx context.Context, key string, blocks [][]byte)
 }
 
 func (k *KVErasure) Encode(ctx context.Context, disks []KVAPI, bucket string, reader io.Reader) ([]string, int64, error) {
-	p := &kvParallelWriter{disks, k.DataNum + 1, bucket}
-	buf := make([]byte, k.BlockSize)
+	p := &kvParallelWriter{disks, k.DataNum, bucket}
+	buf := kvAllocBloc()
+	defer kvFreeBlock(buf)
 	var ids []string
 	var total int64
 	for {
@@ -153,7 +154,7 @@ func (k *kvParallelReader) Read(ctx context.Context) ([][]byte, error) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = k.disks[i].Get(k.bucket, k.ids[k.currentId], unsafe.Pointer(&k.blocks[i][0]))
+			errs[i] = k.disks[i].Get(k.bucket, k.ids[k.currentId], k.blocks[i])
 			if errs[i] != nil && errs[i].Error() == "EOF" {
 				errs[i] = errFileNotFound
 			}
@@ -171,7 +172,8 @@ func (k *kvParallelReader) Read(ctx context.Context) ([][]byte, error) {
 func (k *KVErasure) Decode(ctx context.Context, disks []KVAPI, bucket string, ids []string, length int64, readQuorum int, writer io.Writer) error {
 	blocks := make([][]byte, len(disks))
 	for i := range blocks {
-		blocks[i] = make([]byte, kvValueSize)
+		blocks[i] = kvAlloc()
+		defer kvFree(blocks[i])
 	}
 	reader := &kvParallelReader{disks, bucket, ids, 0, readQuorum, blocks}
 	remaining := length
@@ -199,6 +201,7 @@ func (k *KVErasure) Decode(ctx context.Context, disks []KVAPI, bucket string, id
 	}
 	if remaining != 0 {
 		logger.LogIf(ctx, errUnexpected)
+		fmt.Println(remaining)
 		return errUnexpected
 	}
 	return nil

@@ -174,6 +174,7 @@ func validateParity(ssParity, rrsParity int) (err error) {
 // If storage class is empty
 // -- standard storage class is assumed and corresponding data and parity is returned
 func getRedundancyCount(sc string, totalDisks int) (data, parity int) {
+	return totalDisks, 0
 	parity = totalDisks / 2
 	switch sc {
 	case reducedRedundancyStorageClass:

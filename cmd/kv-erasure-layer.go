@@ -8,7 +8,6 @@ import (
 	"os"
 	"sync"
 	"time"
-	"unsafe"
 
 	"strings"
 
@@ -159,7 +158,10 @@ func (k *KVErasureLayer) PutObject(ctx context.Context, bucket, object string, d
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = k.disks[i].Put(bucket, object, unsafe.Pointer(&buf.Bytes()[0]))
+			b := kvAlloc()
+			defer kvFree(b)
+			copy(b, buf.Bytes())
+			errs[i] = k.disks[i].Put(bucket, object, b)
 		}(i)
 	}
 	wg.Wait()
@@ -190,8 +192,9 @@ func (k *KVErasureLayer) GetObjectInfo(ctx context.Context, bucket, object strin
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			b := make([]byte, kvValueSize)
-			errs[i] = k.disks[i].Get(bucket, object, unsafe.Pointer(&b[0]))
+			b := kvAlloc()
+			defer kvFree(b)
+			errs[i] = k.disks[i].Get(bucket, object, b)
 			if errs[i] != nil {
 				return
 			}
@@ -231,8 +234,9 @@ func (k *KVErasureLayer) DeleteObject(ctx context.Context, bucket, object string
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			b := make([]byte, kvValueSize)
-			errs[i] = k.disks[i].Get(bucket, object, unsafe.Pointer(&b[0]))
+			b := kvAlloc()
+			defer kvFree(b)
+			errs[i] = k.disks[i].Get(bucket, object, b)
 			if errs[i] != nil {
 				return
 			}
@@ -322,8 +326,9 @@ func (k *KVErasureLayer) GetObject(ctx context.Context, bucket, object string, s
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			b := make([]byte, kvValueSize)
-			errs[i] = k.disks[i].Get(bucket, object, unsafe.Pointer(&b[0]))
+			b := kvAlloc()
+			defer kvFree(b)
+			errs[i] = k.disks[i].Get(bucket, object, b)
 			if errs[i] != nil {
 				return
 			}
@@ -447,7 +452,10 @@ func (k *KVErasureLayer) NewMultipartUpload(ctx context.Context, bucket, object 
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = k.disks[i].Put(bucket, mpEntryName, unsafe.Pointer(&buf.Bytes()[0]))
+			b := kvAlloc()
+			defer kvFree(b)
+			copy(b, buf.Bytes())
+			errs[i] = k.disks[i].Put(bucket, mpEntryName, b)
 		}(i)
 	}
 	wg.Wait()
@@ -474,8 +482,9 @@ func (k *KVErasureLayer) PutObjectPart(ctx context.Context, bucket, object, uplo
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			b := make([]byte, kvValueSize)
-			errs[i] = disks[i].Get(bucket, mpEntryName, unsafe.Pointer(&b[0]))
+			b := kvAlloc()
+			defer kvFree(b)
+			errs[i] = disks[i].Get(bucket, mpEntryName, b)
 			if errs[i] != nil {
 				disks[i] = nil
 				return
@@ -525,13 +534,20 @@ func (k *KVErasureLayer) PutObjectPart(ctx context.Context, bucket, object, uplo
 	if err != nil {
 		return info, err
 	}
+	if buf.Len() > kvValueSize {
+		logger.LogIf(ctx, errUnexpected)
+		return info, errUnexpected
+	}
 	buf.Write(make([]byte, kvValueSize-buf.Len()))
 
 	for i := range k.disks {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = k.disks[i].Put(bucket, mpEntryName, unsafe.Pointer(&buf.Bytes()[0]))
+			b := kvAlloc()
+			defer kvFree(b)
+			copy(b, buf.Bytes())
+			errs[i] = k.disks[i].Put(bucket, mpEntryName, b)
 		}(i)
 	}
 	wg.Wait()
@@ -578,8 +594,9 @@ func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, ob
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			b := make([]byte, kvValueSize)
-			errs[i] = disks[i].Get(bucket, mpEntryName, unsafe.Pointer(&b[0]))
+			b := kvAlloc()
+			defer kvFree(b)
+			errs[i] = disks[i].Get(bucket, mpEntryName, b)
 			if errs[i] != nil {
 				disks[i] = nil
 				return
@@ -598,6 +615,8 @@ func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, ob
 		return objInfo, toObjectErr(err, bucket, object)
 	}
 	if len(uploadedParts) != len(entry.Parts) {
+		fmt.Println(len(uploadedParts))
+		fmt.Println(len(entry.Parts))
 		logger.LogIf(ctx, errUnexpected)
 		return objInfo, errUnexpected
 	}
@@ -628,7 +647,10 @@ func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, ob
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = k.disks[i].Put(bucket, object, unsafe.Pointer(&buf.Bytes()[0]))
+			b := kvAlloc()
+			defer kvFree(b)
+			copy(b, buf.Bytes())
+			errs[i] = k.disks[i].Put(bucket, object, b)
 		}(i)
 	}
 	wg.Wait()
