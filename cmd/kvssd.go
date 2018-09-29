@@ -173,11 +173,14 @@ type kvssd struct {
 	device      string
 	devid       _Ctype_int
 	containerid _Ctype_int
+        pool_name string
+        task_pool unsafe.Pointer
+        numa_attached _Ctype_int
 }
 
-func newKVSSD(device string) (KVAPI, error) {
+func newKVSSD(device string) (KVAPI, error, unsafe.Pointer) {
 	if strings.HasPrefix(device, "/dev/xfs") {
-	        return nil, errUnexpected
+	        return nil, errUnexpected, nil
 	}
 	if strings.HasPrefix(device, "/dev/kvemul") {
 		device = "/dev/kvemul"
@@ -187,16 +190,26 @@ func newKVSSD(device string) (KVAPI, error) {
 	devid := kvs_open_device(device)
 //	fmt.Println("kvs_open_device() returned", devid)
 	if devid < 0 {
-		return nil, errDiskNotFound
+		return nil, errDiskNotFound, nil
 	}
 	containerid := C.minio_kvs_create_container(devid)
 	if containerid < 0 {
 		fmt.Printf("container id < 0")
-		return nil, errUnexpected
+		return nil, errUnexpected, nil
 	}
-	k := &kvssd{device, devid, containerid}
+
+        pool_name := fmt.Sprintf("task_pool_%d_%d_%d", devid, containerid, -1)
+        task_pool := C._kvs_mempool_create(C.CString(pool_name), C.ulong(1024), C.ulong(28 * 1024),  C.int(-1));
+        if (task_pool == nil) {
+            fmt.Println("task_pool is nil")
+            return nil, errUnexpected, nil
+        }
+
+        k := &kvssd{device, devid, containerid, pool_name, task_pool, -1}
+        
 	go k.kv_io()
-	return k, nil
+	
+	return k, nil, task_pool
 }
 
 func kvKeyName(container, key string) []byte {

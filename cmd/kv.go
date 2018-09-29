@@ -38,6 +38,7 @@ type KV struct {
 	GatewayUnsupported
 	trie *patricia.Trie
 	sync.Mutex
+	task_pool unsafe.Pointer
 }
 
 func newKV(device string) (*KV, error) {
@@ -45,11 +46,11 @@ func newKV(device string) (*KV, error) {
 	if bucketName == "" {
 		bucketName = "default"
 	}
-	disk, err := newKVSSD(device)
+	disk, err, task_pool := newKVSSD(device)
 	if err != nil {
 		return nil, err
 	}
-	return &KV{device: device, bucketName: bucketName, disk: disk, trie: patricia.NewTrie()}, nil
+	return &KV{device: device, bucketName: bucketName, disk: disk, trie: patricia.NewTrie(), task_pool: task_pool}, nil
 }
 
 func (k *KV) ListBuckets(ctx context.Context) (buckets []BucketInfo, err error) {
@@ -64,8 +65,9 @@ func (k *KV) GetBucketInfo(ctx context.Context, bucket string) (bucketInfo Bucke
 }
 
 func (k *KV) WriteStream(ctx context.Context, disk KVAPI, bucket string, reader io.Reader) ([]string, int64, error) {
-	cbuf := C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
-	defer C._kvs_free(cbuf, nil)
+	var cbuf unsafe.Pointer
+	C._kvs_mempool_get(k.task_pool, &cbuf)
+	defer C._kvs_mempool_put(k.task_pool, cbuf)
 
 	length := 28*1024
 	buf := (*[1<<30]byte)(unsafe.Pointer(cbuf))[:length:length]
@@ -97,8 +99,9 @@ func (k *KV) WriteStream(ctx context.Context, disk KVAPI, bucket string, reader 
 }
 
 func (k *KV) ReadStream(ctx context.Context, bucket string, ids []string, length int64, writer io.Writer) error {
-	cbuf := C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
-	defer C._kvs_free(cbuf, nil)
+	var cbuf unsafe.Pointer
+	C._kvs_mempool_get(k.task_pool, &cbuf)
+	defer C._kvs_mempool_put(k.task_pool, cbuf)
 
 	l := 28*1024
 	buf := (*[1<<30]byte)(unsafe.Pointer(cbuf))[:l:l]
@@ -134,9 +137,10 @@ func (k *KV) PutObject(ctx context.Context, bucket, object string, data *hash.Re
 		mustGetUUID(),
 	}
 
-	cbuf := C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
-	defer C._kvs_free(cbuf, nil)
-
+	var cbuf unsafe.Pointer
+	C._kvs_mempool_get(k.task_pool, &cbuf)
+	defer C._kvs_mempool_put(k.task_pool, cbuf)
+	
 	length := 28*1024
 	b := (*[1<<30]byte)(unsafe.Pointer(cbuf))[:length:length]
 
@@ -180,9 +184,10 @@ func (k *KV) GetObject(ctx context.Context, bucket, object string, startOffset i
 		return NotImplemented{}
 	}
 
-	cbuf := C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
-	defer C._kvs_free(cbuf, nil)
-
+	var cbuf unsafe.Pointer
+	C._kvs_mempool_get(k.task_pool, &cbuf)
+	defer C._kvs_mempool_put(k.task_pool, cbuf)
+	
 	err = k.disk.Get(bucket, object, cbuf)
 	if err != nil {
 		return err
@@ -211,8 +216,9 @@ func (k *KV) GetObject(ctx context.Context, bucket, object string, startOffset i
 
 func (k *KV) GetObjectInfo(ctx context.Context, bucket, object string) (objInfo ObjectInfo, err error) {
 //	fmt.Printf("gKVGETINFO beg k:%s klen:%d vlen:%d\n", object, len(object), kvValueSize)
-	cbuf := C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
-	defer C._kvs_free(cbuf, nil)
+	var cbuf unsafe.Pointer
+	C._kvs_mempool_get(k.task_pool, &cbuf)
+	defer C._kvs_mempool_put(k.task_pool, cbuf)
 
 	err = k.disk.Get(bucket, object, cbuf)
 	if err != nil {
@@ -242,8 +248,9 @@ func (k *KV) GetObjectInfo(ctx context.Context, bucket, object string) (objInfo 
 
 func (k *KV) DeleteObject(ctx context.Context, bucket, object string) error {
 	var entry KVNSEntry
-	cbuf := C._kvs_malloc(C.ulong(28*1024), C.ulong(4*1024), nil)
-	defer C._kvs_free(cbuf, nil)
+	var cbuf unsafe.Pointer
+	C._kvs_mempool_get(k.task_pool, &cbuf)
+	defer C._kvs_mempool_put(k.task_pool, cbuf)
 	err := k.disk.Get(bucket, object, cbuf)
 	if err != nil {
 		return err
