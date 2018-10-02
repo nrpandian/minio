@@ -61,7 +61,7 @@ func newKVErasureLayer(endpoints EndpointList) (*KVErasureLayer, error) {
 		var disk KVAPI
 		var err error
 		if endpoint.IsLocal {
-			disk, err = newKVXFS(endpoint.Path)
+			disk, err = newKVSSD(endpoint.Path)
 		} else {
 			// disk = newKVRPC(endpoint)
 			logger.FatalIf(fmt.Errorf("distributed minio not supported"), "exiting")
@@ -285,7 +285,7 @@ func (k *KVErasureLayer) DeleteObject(ctx context.Context, bucket, object string
 }
 
 func kvQuorumPart(ctx context.Context, entries []KVNSEntry, errs []error) (KVNSEntry, error) {
-	if err := reduceReadQuorumErrs(ctx, errs, nil, len(entries)/2); err != nil {
+	if err := reduceReadQuorumErrs(ctx, errs, nil, len(entries)); err != nil {
 		return KVNSEntry{}, err
 	}
 

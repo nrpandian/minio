@@ -1,4 +1,3 @@
-// +build ignore
 
 package cmd
 
@@ -18,19 +17,24 @@ extern void on_io_complete_callback();
 static void on_io_complete(void *private1, void *private2, kvs_result_t op_result) {
   const char *errStr = NULL;
   if (op_result.result != KVS_SUCCESS) {
+    if (op_result.result != KVS_ERR_TUPLE_NOT_EXIST) {
+      printf("callback returned : %d\n", op_result.result);
+    }
     errStr = "error in callback";
   }
   on_io_complete_callback(private1, errStr);
 }
 
-static void minio_kvs_init_env() {
-  aio_context aiocontext;
-  aiocontext.num_aiothreads_per_device = 1;
-  aiocontext.num_devices_per_aiothread = 1;
-  aiocontext.queuedepth = 128;
-  aiocontext.io_complete = on_io_complete;
+static aio_context go_aiocontext;
 
-  int ret = kvs_init_env_ex(0, &aiocontext, 0);
+static void minio_kvs_init_env() {
+  go_aiocontext.thread_init = NULL;
+  go_aiocontext.num_aiothreads_per_device = 1;
+  go_aiocontext.num_devices_per_aiothread = 1;
+  go_aiocontext.queuedepth = 128;
+  go_aiocontext.io_complete = on_io_complete;
+
+  int ret = kvs_init_env_ex(0, &go_aiocontext, 0);
   if (ret != KVS_SUCCESS) {
     printf("kvs_init_env() returned error");
   }
@@ -96,6 +100,7 @@ import (
 	"runtime"
 	"strings"
 	"unsafe"
+//	"sync"
 )
 
 //export on_io_complete_callback
@@ -152,7 +157,11 @@ func (k *kvssd) kv_io() {
 			chanContainerMap[kvio.chContainer] = true
 			C.minio_kvs_delete(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 		case KVCallback:
-			kvio.chContainer.c <- kvio.err
+ 		        err := kvio.err
+                        if err != nil {
+                            err = errFileNotFound
+			}
+			kvio.chContainer.c <- err
 			delete(chanContainerMap, kvio.chContainer)
 		}
 	}
@@ -160,6 +169,7 @@ func (k *kvssd) kv_io() {
 
 var smallBlockPool unsafe.Pointer
 var largeBlockPool unsafe.Pointer
+// var kvPoolLock sync.Mutex
 
 func kvs_init_env() {
 	C.minio_kvs_init_env()
@@ -175,16 +185,27 @@ func kvs_init_env() {
 
 func kvAlloc() []byte {
 	var buf unsafe.Pointer
-	C._kvs_mempool_get(smallBlockPool, &buf)
+//	kvPoolLock.Lock()
+//	C._kvs_mempool_get(smallBlockPool, &buf)
+	buf = C._kvs_zalloc(C.ulong(kvValueSize), C.ulong(4*1024), nil)
+//	kvPoolLock.Unlock()
 	if buf == nil {
 		panic("C._kvs_mempool_get of smallBlockPool failed")
 	}
-	return (*[1 << 30]byte)(unsafe.Pointer(buf))[:kvValueSize:kvValueSize]
+	newbuf :=  (*[1 << 30]byte)(unsafe.Pointer(buf))[:kvValueSize:kvValueSize]
+	if buf != unsafe.Pointer(&newbuf[0]) {
+		panic("C._kvs_mempool_get of smallBlockPool buf mismatch failed")
+	}
+	
+	return newbuf
 }
 
 func kvAllocBloc() []byte {
 	var buf unsafe.Pointer
-	C._kvs_mempool_get(largeBlockPool, &buf)
+//	kvPoolLock.Lock()
+//	C._kvs_mempool_get(largeBlockPool, &buf)
+	buf = C._kvs_zalloc(C.ulong(kvValueSize*len(globalEndpoints)), C.ulong(4*1024), nil)
+//	kvPoolLock.Unlock()
 	if buf == nil {
 		panic("C._kvs_mempool_get largeBlockPool failed")
 	}
@@ -193,11 +214,17 @@ func kvAllocBloc() []byte {
 }
 
 func kvFree(buf []byte) {
-	C._kvs_mempool_put(smallBlockPool, unsafe.Pointer(&buf[0]))
+//	kvPoolLock.Lock()
+//	C._kvs_mempool_put(smallBlockPool, unsafe.Pointer(&buf[0]))
+        C._kvs_free(unsafe.Pointer(&buf[0]), nil)
+//	kvPoolLock.Unlock()
 }
 
 func kvFreeBlock(buf []byte) {
-	C._kvs_mempool_put(largeBlockPool, unsafe.Pointer(&buf[0]))
+//	kvPoolLock.Lock()
+//	C._kvs_mempool_put(largeBlockPool, unsafe.Pointer(&buf[0]))
+        C._kvs_free(unsafe.Pointer(&buf[0]), nil)
+//	kvPoolLock.Unlock()
 }
 
 func kvs_open_device(device string) _Ctype_int {
