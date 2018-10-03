@@ -61,7 +61,7 @@ func newKVErasureLayer(endpoints EndpointList) (*KVErasureLayer, error) {
 		var disk KVAPI
 		var err error
 		if endpoint.IsLocal {
-			disk, err = newKVSSD(endpoint.Path)
+			disk, err = newKVXFS(endpoint.Path)
 		} else {
 			// disk = newKVRPC(endpoint)
 			logger.FatalIf(fmt.Errorf("distributed minio not supported"), "exiting")
@@ -315,9 +315,6 @@ func (k *KVErasureLayer) GetObject(ctx context.Context, bucket, object string, s
 		return err
 	}
 	defer objectLock.RUnlock()
-	if startOffset != 0 {
-		return NotImplemented{}
-	}
 	entries := make([]KVNSEntry, len(k.disks))
 	errs := make([]error, len(k.disks))
 
@@ -342,10 +339,8 @@ func (k *KVErasureLayer) GetObject(ctx context.Context, bucket, object string, s
 	wg.Wait()
 	entry, err := kvQuorumPart(ctx, entries, errs)
 	if err != nil {
+		logger.LogIf(ctx, err)
 		return err
-	}
-	if entry.Size != length {
-		return NotImplemented{}
 	}
 	if entry.Size == 0 {
 		return nil
@@ -353,13 +348,46 @@ func (k *KVErasureLayer) GetObject(ctx context.Context, bucket, object string, s
 	disks := make([]KVAPI, len(k.disks))
 	copy(disks, k.disks)
 	erasure := newKVErasure(entry.DataNumber, entry.ParityNumber)
-	for _, part := range entry.Parts {
-		err = erasure.Decode(ctx, disks, bucket, part.IDs, part.Size, entry.DataNumber, writer)
+	partIndex, partOffset := entry.partIndexAndOffset(startOffset)
+	var totalBytesRead int64
+	for ; partIndex < len(entry.Parts); partIndex++ {
+		if length == totalBytesRead {
+			break
+		}
+		part := entry.Parts[partIndex]
+		partLength := part.Size - partOffset
+		if partLength > (length - totalBytesRead) {
+			partLength = length - totalBytesRead
+		}
+		err = erasure.Decode(ctx, disks, bucket, part.IDs, partOffset, partLength, entry.DataNumber, writer)
 		if err != nil {
 			return err
 		}
+		totalBytesRead += partLength
+		partOffset = 0
 	}
 	return nil
+}
+
+func (k *KVErasureLayer) ListObjectsV2(ctx context.Context, bucket, prefix, continuationToken, delimiter string, maxKeys int, fetchOwner bool, startAfter string) (result ListObjectsV2Info, err error) {
+	marker := continuationToken
+	if marker == "" {
+		marker = startAfter
+	}
+
+	loi, err := k.ListObjects(ctx, bucket, prefix, marker, delimiter, maxKeys)
+	if err != nil {
+		return result, err
+	}
+
+	listObjectsV2Info := ListObjectsV2Info{
+		IsTruncated:           loi.IsTruncated,
+		ContinuationToken:     continuationToken,
+		NextContinuationToken: loi.NextMarker,
+		Objects:               loi.Objects,
+		Prefixes:              loi.Prefixes,
+	}
+	return listObjectsV2Info, err
 }
 
 func (k *KVErasureLayer) ListObjects(ctx context.Context, bucket, prefix, marker, delimiter string, maxKeys int) (result ListObjectsInfo, err error) {
@@ -615,8 +643,6 @@ func (k *KVErasureLayer) CompleteMultipartUpload(ctx context.Context, bucket, ob
 		return objInfo, toObjectErr(err, bucket, object)
 	}
 	if len(uploadedParts) != len(entry.Parts) {
-		fmt.Println(len(uploadedParts))
-		fmt.Println(len(entry.Parts))
 		logger.LogIf(ctx, errUnexpected)
 		return objInfo, errUnexpected
 	}

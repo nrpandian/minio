@@ -1,3 +1,4 @@
+// +build ignore
 
 package cmd
 
@@ -100,7 +101,7 @@ import (
 	"runtime"
 	"strings"
 	"unsafe"
-//	"sync"
+	//	"sync"
 )
 
 //export on_io_complete_callback
@@ -157,9 +158,9 @@ func (k *kvssd) kv_io() {
 			chanContainerMap[kvio.chContainer] = true
 			C.minio_kvs_delete(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 		case KVCallback:
- 		        err := kvio.err
-                        if err != nil {
-                            err = errFileNotFound
+			err := kvio.err
+			if err != nil {
+				err = errFileNotFound
 			}
 			kvio.chContainer.c <- err
 			delete(chanContainerMap, kvio.chContainer)
@@ -169,6 +170,7 @@ func (k *kvssd) kv_io() {
 
 var smallBlockPool unsafe.Pointer
 var largeBlockPool unsafe.Pointer
+
 // var kvPoolLock sync.Mutex
 
 func kvs_init_env() {
@@ -185,27 +187,27 @@ func kvs_init_env() {
 
 func kvAlloc() []byte {
 	var buf unsafe.Pointer
-//	kvPoolLock.Lock()
-//	C._kvs_mempool_get(smallBlockPool, &buf)
+	//	kvPoolLock.Lock()
+	//	C._kvs_mempool_get(smallBlockPool, &buf)
 	buf = C._kvs_zalloc(C.ulong(kvValueSize), C.ulong(4*1024), nil)
-//	kvPoolLock.Unlock()
+	//	kvPoolLock.Unlock()
 	if buf == nil {
 		panic("C._kvs_mempool_get of smallBlockPool failed")
 	}
-	newbuf :=  (*[1 << 30]byte)(unsafe.Pointer(buf))[:kvValueSize:kvValueSize]
+	newbuf := (*[1 << 30]byte)(unsafe.Pointer(buf))[:kvValueSize:kvValueSize]
 	if buf != unsafe.Pointer(&newbuf[0]) {
 		panic("C._kvs_mempool_get of smallBlockPool buf mismatch failed")
 	}
-	
+
 	return newbuf
 }
 
 func kvAllocBloc() []byte {
 	var buf unsafe.Pointer
-//	kvPoolLock.Lock()
-//	C._kvs_mempool_get(largeBlockPool, &buf)
+	//	kvPoolLock.Lock()
+	//	C._kvs_mempool_get(largeBlockPool, &buf)
 	buf = C._kvs_zalloc(C.ulong(kvValueSize*len(globalEndpoints)), C.ulong(4*1024), nil)
-//	kvPoolLock.Unlock()
+	//	kvPoolLock.Unlock()
 	if buf == nil {
 		panic("C._kvs_mempool_get largeBlockPool failed")
 	}
@@ -214,17 +216,17 @@ func kvAllocBloc() []byte {
 }
 
 func kvFree(buf []byte) {
-//	kvPoolLock.Lock()
-//	C._kvs_mempool_put(smallBlockPool, unsafe.Pointer(&buf[0]))
-        C._kvs_free(unsafe.Pointer(&buf[0]), nil)
-//	kvPoolLock.Unlock()
+	//	kvPoolLock.Lock()
+	//	C._kvs_mempool_put(smallBlockPool, unsafe.Pointer(&buf[0]))
+	C._kvs_free(unsafe.Pointer(&buf[0]), nil)
+	//	kvPoolLock.Unlock()
 }
 
 func kvFreeBlock(buf []byte) {
-//	kvPoolLock.Lock()
-//	C._kvs_mempool_put(largeBlockPool, unsafe.Pointer(&buf[0]))
-        C._kvs_free(unsafe.Pointer(&buf[0]), nil)
-//	kvPoolLock.Unlock()
+	//	kvPoolLock.Lock()
+	//	C._kvs_mempool_put(largeBlockPool, unsafe.Pointer(&buf[0]))
+	C._kvs_free(unsafe.Pointer(&buf[0]), nil)
+	//	kvPoolLock.Unlock()
 }
 
 func kvs_open_device(device string) _Ctype_int {

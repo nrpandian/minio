@@ -61,6 +61,24 @@ func (k *KVNSEntry) AddPart(kvPart KVPart) {
 	k.Size += kvPart.Size
 }
 
+func (k *KVNSEntry) partIndexAndOffset(offset int64) (int, int64) {
+	if offset == 0 {
+		// Special case - if offset is 0, then partIndex and partOffset are always 0.
+		return 0, 0
+	}
+	partOffset := offset
+	// Seek until object offset maps to a particular part offset.
+	for i, part := range k.Parts {
+		// Offset is smaller than size we have reached the proper part offset.
+		if partOffset < part.Size {
+			return i, partOffset
+		}
+		// Continue to towards the next part.
+		partOffset -= part.Size
+	}
+	panic("invalid range")
+}
+
 type KVListMap struct {
 	listMap map[string]*patricia.Trie
 	sync.Mutex

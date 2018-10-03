@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"sync"
 
@@ -169,16 +168,49 @@ func (k *kvParallelReader) Read(ctx context.Context) ([][]byte, error) {
 	return blocks, err
 }
 
-func (k *KVErasure) Decode(ctx context.Context, disks []KVAPI, bucket string, ids []string, length int64, readQuorum int, writer io.Writer) error {
+func newKVParallelReader(disks []KVAPI, bucket string, ids []string, offset int64, readQuorum int, blocks [][]byte) *kvParallelReader {
+	blockSize := int64(readQuorum * kvValueSize)
+	currentId := offset / blockSize
+	return &kvParallelReader{disks, bucket, ids, int(currentId), readQuorum, blocks}
+}
+
+func (k *KVErasure) Decode(ctx context.Context, disks []KVAPI, bucket string, ids []string, offset, length int64, readQuorum int, writer io.Writer) error {
+	if length == 0 {
+		return nil
+	}
 	blocks := make([][]byte, len(disks))
 	for i := range blocks {
 		blocks[i] = kvAlloc()
 		defer kvFree(blocks[i])
 	}
-	reader := &kvParallelReader{disks, bucket, ids, 0, readQuorum, blocks}
-	remaining := length
-	for reader.currentId < len(reader.ids) {
-		blocks, err := reader.Read(ctx)
+
+	blockSize := int64(kvValueSize * len(globalEndpoints))
+	reader := newKVParallelReader(disks, bucket, ids, offset, readQuorum, blocks)
+
+	startBlock := offset / blockSize
+	endBlock := (offset + length) / blockSize
+
+	var bytesWritten int64
+	for block := startBlock; block <= endBlock; block++ {
+		var blockOffset, blockLength int64
+		switch {
+		case startBlock == endBlock:
+			blockOffset = offset % blockSize
+			blockLength = length
+		case block == startBlock:
+			blockOffset = offset % blockSize
+			blockLength = blockSize - blockOffset
+		case block == endBlock:
+			blockOffset = 0
+			blockLength = (offset + length) % blockSize
+		default:
+			blockOffset = 0
+			blockLength = blockSize
+		}
+		if blockLength == 0 {
+			break
+		}
+		bufs, err := reader.Read(ctx)
 		if err != nil {
 			logger.LogIf(ctx, err)
 			return err
@@ -187,22 +219,16 @@ func (k *KVErasure) Decode(ctx context.Context, disks []KVAPI, bucket string, id
 			logger.LogIf(ctx, err)
 			return err
 		}
-		for _, block := range blocks[:readQuorum] {
-			if remaining < int64(len(block)) {
-				block = block[:remaining]
-			}
-			n, err := writer.Write(block)
-			if err != nil {
-				logger.LogIf(ctx, err)
-				return err
-			}
-			remaining -= int64(n)
+		n, err := writeDataBlocks(ctx, writer, bufs, k.DataNum, blockOffset, blockLength)
+		if err != nil {
+			return err
 		}
+		bytesWritten += n
 	}
-	if remaining != 0 {
-		logger.LogIf(ctx, errUnexpected)
-		fmt.Println(remaining)
-		return errUnexpected
+	if bytesWritten != length {
+		logger.LogIf(ctx, errLessData)
+		return errLessData
 	}
 	return nil
+
 }
