@@ -137,11 +137,12 @@ type KVIO struct {
 	value       []byte
 	chContainer *chanContainer
 	err         error
+	kvssdPtr    *kvssd
 }
 
 var KVIOCH chan KVIO
 
-func (k *kvssd) kv_io() {
+func kv_io() {
 	runtime.LockOSThread()
 	chanContainerMap := make(map[*chanContainer]bool)
 	for {
@@ -149,14 +150,14 @@ func (k *kvssd) kv_io() {
 		switch kvio.callType {
 		case KVPut:
 			chanContainerMap[kvio.chContainer] = true
-			C.minio_kvs_put(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), unsafe.Pointer(&kvio.value[0]), C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
+			C.minio_kvs_put(kvio.kvssdPtr.devid, kvio.kvssdPtr.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), unsafe.Pointer(&kvio.value[0]), C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 		case KVGet:
 			chanContainerMap[kvio.chContainer] = true
 			//C.minio_kvs_get(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), kvio.vptr, C.int(28*1024), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
-			C.minio_kvs_get(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), unsafe.Pointer(&kvio.value[0]), C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
+			C.minio_kvs_get(kvio.kvssdPtr.devid, kvio.kvssdPtr.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), unsafe.Pointer(&kvio.value[0]), C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 		case KVDelete:
 			chanContainerMap[kvio.chContainer] = true
-			C.minio_kvs_delete(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
+			C.minio_kvs_delete(kvio.kvssdPtr.devid, kvio.kvssdPtr.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 		case KVCallback:
 			err := kvio.err
 			if err != nil {
@@ -175,14 +176,15 @@ var largeBlockPool unsafe.Pointer
 
 func kvs_init_env() {
 	C.minio_kvs_init_env()
-	smallBlockPool = C._kvs_mempool_create(C.CString("small_block"), C.ulong(2048), C.ulong(kvValueSize), C.int(-1))
-	if smallBlockPool == nil {
-		panic("smallBlockPool is nil")
-	}
-	largeBlockPool = C._kvs_mempool_create(C.CString("large_block"), C.ulong(1024), C.ulong(kvValueSize*len(globalEndpoints)), C.int(-1))
-	if largeBlockPool == nil {
-		panic("largeBlockPool is nil")
-	}
+	go kv_io()
+	// smallBlockPool = C._kvs_mempool_create(C.CString("small_block"), C.ulong(2048), C.ulong(kvValueSize), C.int(-1))
+	// if smallBlockPool == nil {
+	// 	panic("smallBlockPool is nil")
+	// }
+	// largeBlockPool = C._kvs_mempool_create(C.CString("large_block"), C.ulong(1024), C.ulong(kvValueSize*len(globalEndpoints)), C.int(-1))
+	// if largeBlockPool == nil {
+	// 	panic("largeBlockPool is nil")
+	// }
 }
 
 func kvAlloc() []byte {
@@ -276,7 +278,7 @@ func (k *kvssd) Put(container, key string, value []byte) error {
 	kvKey := kvKeyName(container, key)
 	c := make(chan error)
 	chContainer := &chanContainer{c}
-	KVIOCH <- KVIO{callType: KVPut, key: kvKey, value: value, chContainer: chContainer}
+	KVIOCH <- KVIO{callType: KVPut, key: kvKey, value: value, chContainer: chContainer, kvssdPtr: k}
 	return <-chContainer.c
 }
 
@@ -284,7 +286,7 @@ func (k *kvssd) Get(container, key string, value []byte) error {
 	kvKey := kvKeyName(container, key)
 	c := make(chan error)
 	chContainer := &chanContainer{c}
-	KVIOCH <- KVIO{callType: KVGet, key: kvKey, value: value, chContainer: chContainer}
+	KVIOCH <- KVIO{callType: KVGet, key: kvKey, value: value, chContainer: chContainer, kvssdPtr: k}
 	return <-chContainer.c
 }
 
@@ -292,7 +294,7 @@ func (k *kvssd) Delete(container, key string) error {
 	kvKey := kvKeyName(container, key)
 	c := make(chan error)
 	chContainer := &chanContainer{c}
-	KVIOCH <- KVIO{callType: KVDelete, key: kvKey, chContainer: chContainer}
+	KVIOCH <- KVIO{callType: KVDelete, key: kvKey, chContainer: chContainer, kvssdPtr: k}
 	return <-chContainer.c
 }
 
