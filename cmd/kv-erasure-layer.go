@@ -61,7 +61,7 @@ func newKVErasureLayer(endpoints EndpointList) (*KVErasureLayer, error) {
 		var disk KVAPI
 		var err error
 		if endpoint.IsLocal {
-			disk, err = newKVXFS(endpoint.Path)
+			disk, err = newKVSSD(endpoint.Path)
 		} else {
 			// disk = newKVRPC(endpoint)
 			logger.FatalIf(fmt.Errorf("distributed minio not supported"), "exiting")

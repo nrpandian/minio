@@ -28,7 +28,7 @@ import (
 	"strings"
 
 	"github.com/minio/minio-go/pkg/set"
-	"github.com/minio/minio/cmd/logger"
+//	"github.com/minio/minio/cmd/logger"
 	"github.com/minio/minio/pkg/mountinfo"
 )
 
@@ -207,7 +207,7 @@ func NewEndpointList(args ...string) (endpoints EndpointList, err error) {
 
 		arg = endpoint.String()
 		if uniqueArgs.Contains(arg) {
-			return nil, fmt.Errorf("duplicate endpoints found")
+//			return nil, fmt.Errorf("duplicate endpoints found")
 		}
 		uniqueArgs.Add(arg)
 		endpoints = append(endpoints, endpoint)
@@ -243,7 +243,7 @@ func CreateEndpoints(serverAddr string, args ...[]string) (string, EndpointList,
 		return serverAddr, endpoints, setupType, err
 	}
 
-	_, serverAddrPort := mustSplitHostPort(serverAddr)
+	// _, serverAddrPort := mustSplitHostPort(serverAddr)
 
 	// For single arg, return FS setup.
 	if len(args) == 1 && len(args[0]) == 1 {
@@ -293,158 +293,158 @@ func CreateEndpoints(serverAddr string, args ...[]string) (string, EndpointList,
 		return serverAddr, endpoints, setupType, nil
 	}
 
-	// Here all endpoints are URL style.
-	endpointPathSet := set.NewStringSet()
-	localEndpointCount := 0
-	localServerAddrSet := set.NewStringSet()
-	localPortSet := set.NewStringSet()
+	// // Here all endpoints are URL style.
+	// endpointPathSet := set.NewStringSet()
+	// localEndpointCount := 0
+	// localServerAddrSet := set.NewStringSet()
+	// localPortSet := set.NewStringSet()
 
-	for _, endpoint := range endpoints {
-		endpointPathSet.Add(endpoint.Path)
-		if endpoint.IsLocal {
-			localServerAddrSet.Add(endpoint.Host)
+	// for _, endpoint := range endpoints {
+	// 	endpointPathSet.Add(endpoint.Path)
+	// 	if endpoint.IsLocal {
+	// 		localServerAddrSet.Add(endpoint.Host)
 
-			var port string
-			_, port, err = net.SplitHostPort(endpoint.Host)
-			if err != nil {
-				port = serverAddrPort
-			}
+	// 		var port string
+	// 		_, port, err = net.SplitHostPort(endpoint.Host)
+	// 		if err != nil {
+	// 			port = serverAddrPort
+	// 		}
 
-			localPortSet.Add(port)
+	// 		localPortSet.Add(port)
 
-			localEndpointCount++
-		}
-	}
+	// 		localEndpointCount++
+	// 	}
+	// }
 
-	// No local endpoint found.
-	if localEndpointCount == 0 {
-		return serverAddr, endpoints, setupType, uiErrInvalidErasureEndpoints(nil).Msg("no endpoint pointing to the local machine is found")
-	}
+	// // No local endpoint found.
+	// if localEndpointCount == 0 {
+	// 	return serverAddr, endpoints, setupType, uiErrInvalidErasureEndpoints(nil).Msg("no endpoint pointing to the local machine is found")
+	// }
 
-	// Check whether same path is not used in endpoints of a host on different port.
-	{
-		pathIPMap := make(map[string]set.StringSet)
-		for _, endpoint := range endpoints {
-			var host string
-			host, _, err = net.SplitHostPort(endpoint.Host)
-			if err != nil {
-				host = endpoint.Host
-			}
-			hostIPSet, _ := getHostIP4(host)
-			if IPSet, ok := pathIPMap[endpoint.Path]; ok {
-				if !IPSet.Intersection(hostIPSet).IsEmpty() {
-					return serverAddr, endpoints, setupType,
-						uiErrInvalidErasureEndpoints(nil).Msg(fmt.Sprintf("path '%s' can not be served by different port on same address", endpoint.Path))
-				}
-				pathIPMap[endpoint.Path] = IPSet.Union(hostIPSet)
-			} else {
-				pathIPMap[endpoint.Path] = hostIPSet
-			}
-		}
-	}
+	// // Check whether same path is not used in endpoints of a host on different port.
+	// {
+	// 	pathIPMap := make(map[string]set.StringSet)
+	// 	for _, endpoint := range endpoints {
+	// 		var host string
+	// 		host, _, err = net.SplitHostPort(endpoint.Host)
+	// 		if err != nil {
+	// 			host = endpoint.Host
+	// 		}
+	// 		hostIPSet, _ := getHostIP4(host)
+	// 		if IPSet, ok := pathIPMap[endpoint.Path]; ok {
+	// 			if !IPSet.Intersection(hostIPSet).IsEmpty() {
+	// 				return serverAddr, endpoints, setupType,
+	// 					uiErrInvalidErasureEndpoints(nil).Msg(fmt.Sprintf("path '%s' can not be served by different port on same address", endpoint.Path))
+	// 			}
+	// 			pathIPMap[endpoint.Path] = IPSet.Union(hostIPSet)
+	// 		} else {
+	// 			pathIPMap[endpoint.Path] = hostIPSet
+	// 		}
+	// 	}
+	// }
 
-	// Check whether same path is used for more than 1 local endpoints.
-	{
-		localPathSet := set.CreateStringSet()
-		for _, endpoint := range endpoints {
-			if !endpoint.IsLocal {
-				continue
-			}
-			if localPathSet.Contains(endpoint.Path) {
-				return serverAddr, endpoints, setupType,
-					uiErrInvalidErasureEndpoints(nil).Msg(fmt.Sprintf("path '%s' cannot be served by different address on same server", endpoint.Path))
-			}
-			localPathSet.Add(endpoint.Path)
-		}
-	}
+	// // Check whether same path is used for more than 1 local endpoints.
+	// {
+	// 	localPathSet := set.CreateStringSet()
+	// 	for _, endpoint := range endpoints {
+	// 		if !endpoint.IsLocal {
+	// 			continue
+	// 		}
+	// 		if localPathSet.Contains(endpoint.Path) {
+	// 			return serverAddr, endpoints, setupType,
+	// 				uiErrInvalidErasureEndpoints(nil).Msg(fmt.Sprintf("path '%s' cannot be served by different address on same server", endpoint.Path))
+	// 		}
+	// 		localPathSet.Add(endpoint.Path)
+	// 	}
+	// }
 
-	// Check whether serverAddrPort matches at least in one of port used in local endpoints.
-	{
-		if !localPortSet.Contains(serverAddrPort) {
-			if len(localPortSet) > 1 {
-				return serverAddr, endpoints, setupType,
-					uiErrInvalidErasureEndpoints(nil).Msg("port number in server address must match with one of the port in local endpoints")
-			}
-			return serverAddr, endpoints, setupType,
-				uiErrInvalidErasureEndpoints(nil).Msg("server address and local endpoint have different ports")
-		}
-	}
+	// // Check whether serverAddrPort matches at least in one of port used in local endpoints.
+	// {
+	// 	if !localPortSet.Contains(serverAddrPort) {
+	// 		if len(localPortSet) > 1 {
+	// 			return serverAddr, endpoints, setupType,
+	// 				uiErrInvalidErasureEndpoints(nil).Msg("port number in server address must match with one of the port in local endpoints")
+	// 		}
+	// 		return serverAddr, endpoints, setupType,
+	// 			uiErrInvalidErasureEndpoints(nil).Msg("server address and local endpoint have different ports")
+	// 	}
+	// }
 
-	// All endpoints are pointing to local host
-	if len(endpoints) == localEndpointCount {
-		// If all endpoints have same port number, then this is XL setup using URL style endpoints.
-		if len(localPortSet) == 1 {
-			if len(localServerAddrSet) > 1 {
-				// TODO: Even though all endpoints are local, the local host is referred by different IP/name.
-				// eg '172.0.0.1', 'localhost' and 'mylocalhostname' point to same local host.
-				//
-				// In this case, we bind to 0.0.0.0 ie to all interfaces.
-				// The actual way to do is bind to only IPs in uniqueLocalHosts.
-				serverAddr = net.JoinHostPort("", serverAddrPort)
-			}
+	// // All endpoints are pointing to local host
+	// if len(endpoints) == localEndpointCount {
+	// 	// If all endpoints have same port number, then this is XL setup using URL style endpoints.
+	// 	if len(localPortSet) == 1 {
+	// 		if len(localServerAddrSet) > 1 {
+	// 			// TODO: Even though all endpoints are local, the local host is referred by different IP/name.
+	// 			// eg '172.0.0.1', 'localhost' and 'mylocalhostname' point to same local host.
+	// 			//
+	// 			// In this case, we bind to 0.0.0.0 ie to all interfaces.
+	// 			// The actual way to do is bind to only IPs in uniqueLocalHosts.
+	// 			serverAddr = net.JoinHostPort("", serverAddrPort)
+	// 		}
 
-			endpointPaths := endpointPathSet.ToSlice()
-			endpoints, _ = NewEndpointList(endpointPaths...)
-			setupType = XLSetupType
-			return serverAddr, endpoints, setupType, nil
-		}
+	// 		endpointPaths := endpointPathSet.ToSlice()
+	// 		endpoints, _ = NewEndpointList(endpointPaths...)
+	// 		setupType = XLSetupType
+	// 		return serverAddr, endpoints, setupType, nil
+	// 	}
 
-		// Even though all endpoints are local, but those endpoints use different ports.
-		// This means it is DistXL setup.
-	} else {
-		// This is DistXL setup.
-		// Check whether local server address are not 127.x.x.x
-		for _, localServerAddr := range localServerAddrSet.ToSlice() {
-			host, _, err := net.SplitHostPort(localServerAddr)
-			if err != nil {
-				host = localServerAddr
-			}
+	// 	// Even though all endpoints are local, but those endpoints use different ports.
+	// 	// This means it is DistXL setup.
+	// } else {
+	// 	// This is DistXL setup.
+	// 	// Check whether local server address are not 127.x.x.x
+	// 	for _, localServerAddr := range localServerAddrSet.ToSlice() {
+	// 		host, _, err := net.SplitHostPort(localServerAddr)
+	// 		if err != nil {
+	// 			host = localServerAddr
+	// 		}
 
-			ipList, err := getHostIP4(host)
-			logger.FatalIf(err, "unexpected error when resolving host '%s'", host)
+	// 		ipList, err := getHostIP4(host)
+	// 		logger.FatalIf(err, "unexpected error when resolving host '%s'", host)
 
-			// Filter ipList by IPs those start with '127.'.
-			loopBackIPs := ipList.FuncMatch(func(ip string, matchString string) bool {
-				return strings.HasPrefix(ip, "127.")
-			}, "")
+	// 		// Filter ipList by IPs those start with '127.'.
+	// 		loopBackIPs := ipList.FuncMatch(func(ip string, matchString string) bool {
+	// 			return strings.HasPrefix(ip, "127.")
+	// 		}, "")
 
-			// If loop back IP is found and ipList contains only loop back IPs, then error out.
-			if len(loopBackIPs) > 0 && len(loopBackIPs) == len(ipList) {
-				err = fmt.Errorf("'%s' resolves to loopback address is not allowed for distributed XL", localServerAddr)
-				return serverAddr, endpoints, setupType, err
-			}
-		}
-	}
+	// 		// If loop back IP is found and ipList contains only loop back IPs, then error out.
+	// 		if len(loopBackIPs) > 0 && len(loopBackIPs) == len(ipList) {
+	// 			err = fmt.Errorf("'%s' resolves to loopback address is not allowed for distributed XL", localServerAddr)
+	// 			return serverAddr, endpoints, setupType, err
+	// 		}
+	// 	}
+	// }
 
-	// Add missing port in all endpoints.
-	for i := range endpoints {
-		_, port, err := net.SplitHostPort(endpoints[i].Host)
-		if err != nil {
-			endpoints[i].Host = net.JoinHostPort(endpoints[i].Host, serverAddrPort)
-		} else if endpoints[i].IsLocal && serverAddrPort != port {
-			// If endpoint is local, but port is different than serverAddrPort, then make it as remote.
-			endpoints[i].IsLocal = false
-		}
-	}
+	// // Add missing port in all endpoints.
+	// for i := range endpoints {
+	// 	_, port, err := net.SplitHostPort(endpoints[i].Host)
+	// 	if err != nil {
+	// 		endpoints[i].Host = net.JoinHostPort(endpoints[i].Host, serverAddrPort)
+	// 	} else if endpoints[i].IsLocal && serverAddrPort != port {
+	// 		// If endpoint is local, but port is different than serverAddrPort, then make it as remote.
+	// 		endpoints[i].IsLocal = false
+	// 	}
+	// }
 
-	uniqueArgs := set.NewStringSet()
-	for _, endpoint := range endpoints {
-		uniqueArgs.Add(endpoint.Host)
-	}
+	// uniqueArgs := set.NewStringSet()
+	// for _, endpoint := range endpoints {
+	// 	uniqueArgs.Add(endpoint.Host)
+	// }
 
-	// Error out if we have more than serverCommandLineArgsMax unique servers.
-	if len(uniqueArgs.ToSlice()) > serverCommandLineArgsMax {
-		err := fmt.Errorf("Unsupported number of endpoints (%s), total number of servers cannot be more than %d", endpoints, serverCommandLineArgsMax)
-		return serverAddr, endpoints, setupType, err
-	}
+	// // Error out if we have more than serverCommandLineArgsMax unique servers.
+	// if len(uniqueArgs.ToSlice()) > serverCommandLineArgsMax {
+	// 	err := fmt.Errorf("Unsupported number of endpoints (%s), total number of servers cannot be more than %d", endpoints, serverCommandLineArgsMax)
+	// 	return serverAddr, endpoints, setupType, err
+	// }
 
-	// Error out if we have less than 2 unique servers.
-	if len(uniqueArgs.ToSlice()) < 2 && setupType == DistXLSetupType {
-		err := fmt.Errorf("Unsupported number of endpoints (%s), minimum number of servers cannot be less than 2 in distributed setup", endpoints)
-		return serverAddr, endpoints, setupType, err
-	}
+	// // Error out if we have less than 2 unique servers.
+	// if len(uniqueArgs.ToSlice()) < 2 && setupType == DistXLSetupType {
+	// 	err := fmt.Errorf("Unsupported number of endpoints (%s), minimum number of servers cannot be less than 2 in distributed setup", endpoints)
+	// 	return serverAddr, endpoints, setupType, err
+	// }
 
-	updateDomainIPs(uniqueArgs)
+	// updateDomainIPs(uniqueArgs)
 
 	setupType = DistXLSetupType
 	return serverAddr, endpoints, setupType, nil

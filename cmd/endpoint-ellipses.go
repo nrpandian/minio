@@ -233,11 +233,12 @@ func getAllSets(args ...string) ([][]string, error) {
 // CreateServerEndpoints - validates and creates new endpoints from input args, supports
 // both ellipses and without ellipses transparently.
 func createServerEndpoints(serverAddr string, args ...string) (string, EndpointList, SetupType, int, int, error) {
-	setArgs, err := getAllSets(args...)
-	if err != nil {
-		return serverAddr, nil, -1, 0, 0, err
-	}
-
+	// setArgs, err := getAllSets(args...)
+	// if err != nil {
+	// 	return serverAddr, nil, -1, 0, 0, err
+	// }
+	setArgs := [][]string{args}
+	var err error
 	var endpoints EndpointList
 	var setupType SetupType
 	serverAddr, endpoints, setupType, err = CreateEndpoints(serverAddr, setArgs...)

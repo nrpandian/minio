@@ -1,4 +1,3 @@
-// +build ignore
 
 package cmd
 
@@ -18,9 +17,9 @@ extern void on_io_complete_callback();
 static void on_io_complete(void *private1, void *private2, kvs_result_t op_result) {
   const char *errStr = NULL;
   if (op_result.result != KVS_SUCCESS) {
-    if (op_result.result != KVS_ERR_TUPLE_NOT_EXIST) {
+    //if (op_result.result != KVS_ERR_TUPLE_NOT_EXIST) {
       printf("callback returned : %d\n", op_result.result);
-    }
+    //}
     errStr = "error in callback";
   }
   on_io_complete_callback(private1, errStr);
@@ -32,7 +31,7 @@ static void minio_kvs_init_env() {
   go_aiocontext.thread_init = NULL;
   go_aiocontext.num_aiothreads_per_device = 1;
   go_aiocontext.num_devices_per_aiothread = 1;
-  go_aiocontext.queuedepth = 128;
+  go_aiocontext.queuedepth = 64;
   go_aiocontext.io_complete = on_io_complete;
 
   int ret = kvs_init_env_ex(0, &go_aiocontext, 0);
@@ -41,8 +40,11 @@ static void minio_kvs_init_env() {
   }
 }
 
+static int coreID = 8;
 static int minio_kvs_open_device(char *device) {
-  return kvs_open_device(device, 8);
+ int ret = kvs_open_device(device, 0);
+ coreID += 4;
+ return ret;
 }
 
 static void minio_kvs_close_device(int devid) {
@@ -101,7 +103,9 @@ import (
 	"runtime"
 	"strings"
 	"unsafe"
-	//	"sync"
+	"strconv"
+//	"sync"
+//	"time"
 )
 
 //export on_io_complete_callback
@@ -129,6 +133,7 @@ const (
 
 type chanContainer struct {
 	c chan error
+        key string
 }
 
 type KVIO struct {
@@ -145,22 +150,44 @@ var KVIOCH chan KVIO
 func kv_io() {
 	runtime.LockOSThread()
 	chanContainerMap := make(map[*chanContainer]bool)
+	// keyMaps := make([]map[string]int, 5)
+        // for i := 1; i < 5; i++ {
+	//     keyMaps[i] = make(map[string]int)
+	// }
+	//callCount := 0
+	//go func() {
+	//   for {
+	       //time.Sleep(1*time.Second)
+	       //fmt.Println("callCount", callCount)
+	//   }
+	//}()
 	for {
 		kvio := <-KVIOCH
 		switch kvio.callType {
 		case KVPut:
 			chanContainerMap[kvio.chContainer] = true
+			//callCount++
+			// keyMap := keyMaps[kvio.kvssdPtr.devid]
+			// keyMap[kvio.chContainer.key] = keyMap[kvio.chContainer.key]+1
 			C.minio_kvs_put(kvio.kvssdPtr.devid, kvio.kvssdPtr.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), unsafe.Pointer(&kvio.value[0]), C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 		case KVGet:
 			chanContainerMap[kvio.chContainer] = true
+			//callCount++
 			//C.minio_kvs_get(k.devid, k.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), kvio.vptr, C.int(28*1024), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 			C.minio_kvs_get(kvio.kvssdPtr.devid, kvio.kvssdPtr.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), unsafe.Pointer(&kvio.value[0]), C.int(len(kvio.value)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 		case KVDelete:
+			//callCount++
 			chanContainerMap[kvio.chContainer] = true
 			C.minio_kvs_delete(kvio.kvssdPtr.devid, kvio.kvssdPtr.containerid, unsafe.Pointer(&kvio.key[0]), C.int(len(kvio.key)), C.ulong(uintptr(unsafe.Pointer(kvio.chContainer))))
 		case KVCallback:
+			//callCount--
 			err := kvio.err
 			if err != nil {
+			        // for i := 1; i < 5; i++ {
+				//     keyMap := keyMaps[i]
+				//     fmt.Println(i, keyMap[kvio.chContainer.key], "*****")
+				// }
+				// panic("error")
 				err = errFileNotFound
 			}
 			kvio.chContainer.c <- err
@@ -172,29 +199,33 @@ func kv_io() {
 var smallBlockPool unsafe.Pointer
 var largeBlockPool unsafe.Pointer
 
-// var kvPoolLock sync.Mutex
+//var kvPoolLock sync.Mutex
 
 func kvs_init_env() {
 	C.minio_kvs_init_env()
+	fmt.Println("globalEndpoints", len(globalEndpoints))
+	smallBlockPool = C.kvs_simple_mempool_create(C.CString("small_mp"), 2 * 1024 * 10, C.ulong(1024 * 28))
+	if smallBlockPool ==  nil {
+		panic("C.kvs_simple_mempool_create of smallBlockPool failed")
+	}
+
+	largeBlockPool= C.kvs_simple_mempool_create(C.CString("large_mp"), 2 * 1024 * 10, C.ulong(10 * 1024 * 28))
+	if largeBlockPool ==  nil {
+		panic("C.kvs_simple_mempool_create of largeBlockPool failed")
+	}
+
+	KVIOCH = make(chan KVIO, 1024 * len(globalEndpoints))
 	go kv_io()
-	// smallBlockPool = C._kvs_mempool_create(C.CString("small_block"), C.ulong(2048), C.ulong(kvValueSize), C.int(-1))
-	// if smallBlockPool == nil {
-	// 	panic("smallBlockPool is nil")
-	// }
-	// largeBlockPool = C._kvs_mempool_create(C.CString("large_block"), C.ulong(1024), C.ulong(kvValueSize*len(globalEndpoints)), C.int(-1))
-	// if largeBlockPool == nil {
-	// 	panic("largeBlockPool is nil")
-	// }
 }
 
 func kvAlloc() []byte {
 	var buf unsafe.Pointer
-	//	kvPoolLock.Lock()
-	//	C._kvs_mempool_get(smallBlockPool, &buf)
-	buf = C._kvs_zalloc(C.ulong(kvValueSize), C.ulong(4*1024), nil)
-	//	kvPoolLock.Unlock()
+	//kvPoolLock.Lock()
+	buf = C.kvs_simple_mempool_get(smallBlockPool)
+	//kvPoolLock.Unlock()
+	//buf = C._kvs_zalloc(C.ulong(kvValueSize), C.ulong(4*1024), nil)
 	if buf == nil {
-		panic("C._kvs_mempool_get of smallBlockPool failed")
+		panic("C.kvs_simple_mempool_get of smallBlockPool failed")
 	}
 	newbuf := (*[1 << 30]byte)(unsafe.Pointer(buf))[:kvValueSize:kvValueSize]
 	if buf != unsafe.Pointer(&newbuf[0]) {
@@ -206,29 +237,29 @@ func kvAlloc() []byte {
 
 func kvAllocBloc() []byte {
 	var buf unsafe.Pointer
-	//	kvPoolLock.Lock()
-	//	C._kvs_mempool_get(largeBlockPool, &buf)
-	buf = C._kvs_zalloc(C.ulong(kvValueSize*len(globalEndpoints)), C.ulong(4*1024), nil)
-	//	kvPoolLock.Unlock()
+	//kvPoolLock.Lock()
+	buf = C.kvs_simple_mempool_get(largeBlockPool)
+	//kvPoolLock.Unlock()
+	//buf = C._kvs_zalloc(C.ulong(kvValueSize*len(globalEndpoints)), C.ulong(4*1024), nil)
 	if buf == nil {
-		panic("C._kvs_mempool_get largeBlockPool failed")
+		panic("C.kvs_simple_mempool_get largeBlockPool failed")
 	}
 	size := kvValueSize * len(globalEndpoints)
 	return (*[1 << 30]byte)(unsafe.Pointer(buf))[:size:size]
 }
 
 func kvFree(buf []byte) {
-	//	kvPoolLock.Lock()
-	//	C._kvs_mempool_put(smallBlockPool, unsafe.Pointer(&buf[0]))
-	C._kvs_free(unsafe.Pointer(&buf[0]), nil)
-	//	kvPoolLock.Unlock()
+	//kvPoolLock.Lock()
+	C.kvs_simple_mempool_put(smallBlockPool, unsafe.Pointer(&buf[0]))
+	//kvPoolLock.Unlock()
+	//C._kvs_free(unsafe.Pointer(&buf[0]), nil)
 }
 
 func kvFreeBlock(buf []byte) {
-	//	kvPoolLock.Lock()
-	//	C._kvs_mempool_put(largeBlockPool, unsafe.Pointer(&buf[0]))
-	C._kvs_free(unsafe.Pointer(&buf[0]), nil)
-	//	kvPoolLock.Unlock()
+	//kvPoolLock.Lock()
+	C.kvs_simple_mempool_put(largeBlockPool, unsafe.Pointer(&buf[0]))
+	//kvPoolLock.Unlock()
+	//C._kvs_free(unsafe.Pointer(&buf[0]), nil)
 }
 
 func kvs_open_device(device string) _Ctype_int {
@@ -253,10 +284,9 @@ func newKVSSD(device string) (KVAPI, error) {
 	if strings.HasPrefix(device, "/dev/kvemul") {
 		device = "/dev/kvemul"
 	}
-	KVIOCH = make(chan KVIO, 1024)
-	//	fmt.Println("calling kvs_open_device", device)
+	fmt.Println("calling kvs_open_device", device)
 	devid := kvs_open_device(device)
-	//	fmt.Println("kvs_open_device() returned", devid)
+	fmt.Println("kvs_open_device() returned", devid)
 	if devid < 0 {
 		return nil, errDiskNotFound
 	}
@@ -266,34 +296,43 @@ func newKVSSD(device string) (KVAPI, error) {
 		return nil, errUnexpected
 	}
 	k := &kvssd{device, devid, containerid}
-	go k.kv_io()
 	return k, nil
 }
 
-func kvKeyName(container, key string) []byte {
-	return getSHA256Sum([]byte(pathJoin(container, key)))[:16]
+func kvKeyName(container, key ,devid string) []byte {
+	return getSHA256Sum([]byte(pathJoin(container, key, devid)))[:16]
 }
 
 func (k *kvssd) Put(container, key string, value []byte) error {
-	kvKey := kvKeyName(container, key)
+	kvKey := kvKeyName(container, key, strconv.Itoa(int(k.devid)))
 	c := make(chan error)
-	chContainer := &chanContainer{c}
+	chContainer := &chanContainer{c, string(kvKey)}
 	KVIOCH <- KVIO{callType: KVPut, key: kvKey, value: value, chContainer: chContainer, kvssdPtr: k}
-	return <-chContainer.c
+	// return <-chContainer.c
+	err := <-chContainer.c
+	if err != nil {
+	   fmt.Println(k.device, "Put", string(key), err);
+	}
+	return err
 }
 
 func (k *kvssd) Get(container, key string, value []byte) error {
-	kvKey := kvKeyName(container, key)
+	kvKey := kvKeyName(container, key, strconv.Itoa(int(k.devid)))
 	c := make(chan error)
-	chContainer := &chanContainer{c}
+	chContainer := &chanContainer{c, string(kvKey)}
 	KVIOCH <- KVIO{callType: KVGet, key: kvKey, value: value, chContainer: chContainer, kvssdPtr: k}
-	return <-chContainer.c
+	//return <-chContainer.c
+	err := <-chContainer.c
+	if err != nil {
+	   fmt.Println(k.device, "Get", string(key), err);
+	}
+	return err
 }
 
 func (k *kvssd) Delete(container, key string) error {
-	kvKey := kvKeyName(container, key)
+	kvKey := kvKeyName(container, key, strconv.Itoa(int(k.devid)))
 	c := make(chan error)
-	chContainer := &chanContainer{c}
+	chContainer := &chanContainer{c, string(kvKey)}
 	KVIOCH <- KVIO{callType: KVDelete, key: kvKey, chContainer: chContainer, kvssdPtr: k}
 	return <-chContainer.c
 }
