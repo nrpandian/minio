@@ -1,4 +1,3 @@
-// +build ignore
 
 package cmd
 
@@ -18,9 +17,7 @@ extern void on_io_complete_callback();
 static void on_io_complete(void *private1, void *private2, kvs_result_t op_result) {
   const char *errStr = NULL;
   if (op_result.result != KVS_SUCCESS) {
-    if (op_result.result != KVS_ERR_TUPLE_NOT_EXIST) {
-      printf("callback returned : %d\n", op_result.result);
-    }
+    printf("callback returned : %d\n", op_result.result);
     errStr = "error in callback";
   }
   on_io_complete_callback(private1, errStr);
@@ -32,7 +29,7 @@ static void minio_kvs_init_env() {
   go_aiocontext.thread_init = NULL;
   go_aiocontext.num_aiothreads_per_device = 1;
   go_aiocontext.num_devices_per_aiothread = 1;
-  go_aiocontext.queuedepth = 128;
+  go_aiocontext.queuedepth = 64;
   go_aiocontext.io_complete = on_io_complete;
 
   int ret = kvs_init_env_ex(0, &go_aiocontext, 0);
@@ -42,7 +39,7 @@ static void minio_kvs_init_env() {
 }
 
 static int minio_kvs_open_device(char *device) {
-  return kvs_open_device(device, 8);
+  return kvs_open_device(device, 0);
 }
 
 static void minio_kvs_close_device(int devid) {
@@ -175,7 +172,9 @@ var largeBlockPool unsafe.Pointer
 // var kvPoolLock sync.Mutex
 
 func kvs_init_env() {
+        fmt.Println("len(globalEndpoints)", len(globalEndpoints))
 	C.minio_kvs_init_env()
+	KVIOCH = make(chan KVIO, 1024*len(globalEndpoints))
 	go kv_io()
 	// smallBlockPool = C._kvs_mempool_create(C.CString("small_block"), C.ulong(2048), C.ulong(kvValueSize), C.int(-1))
 	// if smallBlockPool == nil {
@@ -253,10 +252,9 @@ func newKVSSD(device string) (KVAPI, error) {
 	if strings.HasPrefix(device, "/dev/kvemul") {
 		device = "/dev/kvemul"
 	}
-	KVIOCH = make(chan KVIO, 1024)
-	//	fmt.Println("calling kvs_open_device", device)
+	fmt.Println("calling kvs_open_device", device)
 	devid := kvs_open_device(device)
-	//	fmt.Println("kvs_open_device() returned", devid)
+	fmt.Println("kvs_open_device() returned", devid)
 	if devid < 0 {
 		return nil, errDiskNotFound
 	}
@@ -266,7 +264,6 @@ func newKVSSD(device string) (KVAPI, error) {
 		return nil, errUnexpected
 	}
 	k := &kvssd{device, devid, containerid}
-	go k.kv_io()
 	return k, nil
 }
 
@@ -279,7 +276,8 @@ func (k *kvssd) Put(container, key string, value []byte) error {
 	c := make(chan error)
 	chContainer := &chanContainer{c}
 	KVIOCH <- KVIO{callType: KVPut, key: kvKey, value: value, chContainer: chContainer, kvssdPtr: k}
-	return <-chContainer.c
+	err := <-chContainer.c
+	return err
 }
 
 func (k *kvssd) Get(container, key string, value []byte) error {
@@ -287,7 +285,8 @@ func (k *kvssd) Get(container, key string, value []byte) error {
 	c := make(chan error)
 	chContainer := &chanContainer{c}
 	KVIOCH <- KVIO{callType: KVGet, key: kvKey, value: value, chContainer: chContainer, kvssdPtr: k}
-	return <-chContainer.c
+	err := <-chContainer.c
+	return err
 }
 
 func (k *kvssd) Delete(container, key string) error {

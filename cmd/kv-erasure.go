@@ -157,13 +157,14 @@ func (k *kvParallelReader) Read(ctx context.Context) ([][]byte, error) {
 			if errs[i] != nil && errs[i].Error() == "EOF" {
 				errs[i] = errFileNotFound
 			}
+			errs[i] = nil
 			if errs[i] == nil {
 				blocks[i] = k.blocks[i]
 			}
 		}(i)
 	}
 	wg.Wait()
-	err := reduceWriteQuorumErrs(ctx, errs, objectOpIgnoredErrs, k.readQuorum)
+	err := reduceReadQuorumErrs(ctx, errs, objectOpIgnoredErrs, k.readQuorum)
 	k.currentId++
 	return blocks, err
 }
