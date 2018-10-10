@@ -25,6 +25,10 @@ static void on_io_complete(void *private1, void *private2, kvs_result_t op_resul
 
 static aio_context go_aiocontext;
 
+static void minio_set_cpu() {
+    kvs_set_cpu();
+}
+
 static void minio_kvs_init_env() {
   go_aiocontext.thread_init = NULL;
   go_aiocontext.num_aiothreads_per_device = 1;
@@ -141,6 +145,7 @@ var KVIOCH chan KVIO
 
 func kv_io() {
 	runtime.LockOSThread()
+	//C.minio_set_cpu()
 	chanContainerMap := make(map[*chanContainer]bool)
 	for {
 		kvio := <-KVIOCH

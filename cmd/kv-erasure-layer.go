@@ -285,27 +285,32 @@ func (k *KVErasureLayer) DeleteObject(ctx context.Context, bucket, object string
 }
 
 func kvQuorumPart(ctx context.Context, entries []KVNSEntry, errs []error) (KVNSEntry, error) {
-	if err := reduceReadQuorumErrs(ctx, errs, nil, len(entries)); err != nil {
-		return KVNSEntry{}, err
+        for i := range errs {
+	    if errs[i] == nil {
+	       return entries[i], nil
+	    }
 	}
+	// if err := reduceReadQuorumErrs(ctx, errs, nil, len(entries)); err != nil {
+	// 	return KVNSEntry{}, err
+	// }
 
-	modTimes := make([]time.Time, len(entries))
-	for i := range entries {
-		modTimes[i] = entries[i].ModTime
-	}
-	modTime, modTimeCount := commonTime(modTimes)
-	if modTimeCount < len(entries)/2 {
-		return KVNSEntry{}, errXLReadQuorum
-	}
-	zero := time.Time{}
-	if modTime == zero {
-		return KVNSEntry{}, ObjectNotFound{}
-	}
-	for i := range entries {
-		if modTime == entries[i].ModTime {
-			return entries[i], nil
-		}
-	}
+	// modTimes := make([]time.Time, len(entries))
+	// for i := range entries {
+	// 	modTimes[i] = entries[i].ModTime
+	// }
+	// modTime, modTimeCount := commonTime(modTimes)
+	// if modTimeCount < len(entries)/2 {
+	// 	return KVNSEntry{}, errXLReadQuorum
+	// }
+	// zero := time.Time{}
+	// if modTime == zero {
+	// 	return KVNSEntry{}, ObjectNotFound{}
+	// }
+	// for i := range entries {
+	// 	if modTime == entries[i].ModTime {
+	// 		return entries[i], nil
+	// 	}
+	// }
 	return KVNSEntry{}, errFileNotFound
 }
 

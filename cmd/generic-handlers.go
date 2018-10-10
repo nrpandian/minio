@@ -24,10 +24,12 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"os"
 
 	"github.com/minio/minio-go/pkg/set"
 
 	humanize "github.com/dustin/go-humanize"
+	ghandlers "github.com/gorilla/handlers"
 	"github.com/minio/minio/cmd/logger"
 	"github.com/minio/minio/pkg/dns"
 	"github.com/minio/minio/pkg/handlers"
@@ -670,6 +672,11 @@ func (f bucketForwardingHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	f.handler.ServeHTTP(w, r)
+}
+
+
+func setApacheLoggingHandler(h http.Handler) http.Handler {
+       return ghandlers.LoggingHandler(os.Stdout, h)
 }
 
 // setBucketForwardingHandler middleware forwards the path style requests
